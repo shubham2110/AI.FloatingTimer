@@ -239,7 +239,7 @@
         <button onclick="openPC()">Add PC</button>
         <button id="discoverButton" class="primary" onclick="discoverNow()">Discover</button>
         <button id="distributeButton" onclick="distributeNow()">Distribute</button>
-        <button id="refreshButton" onclick="refreshNow()">Refresh</button>
+        <button id="refreshButton" class="primary" onclick="refreshNow()">⚡ Force Refresh</button>
         <button onclick="showDashboard()">Dashboard</button>
       </div>
     </header>
@@ -585,11 +585,17 @@
       }
       async function refreshNow() {
         const button = $("refreshButton");
-        button.disabled = true;
+        if (button) button.disabled = true;
         try {
-          await refresh(true);
+          lastListFetch = 0;
+          await load();
+          if ($("dashboard").hidden && selected) await pollOne(pc());
+          else await pollAll();
+          $("discoveryStatus").textContent = "Statuses force-refreshed at " + new Date().toLocaleTimeString();
+        } catch (e) {
+          $("discoveryStatus").textContent = e.message;
         } finally {
-          button.disabled = false;
+          if (button) button.disabled = false;
         }
       }
       async function distributeNow() {

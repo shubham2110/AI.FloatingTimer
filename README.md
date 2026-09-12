@@ -1,5 +1,48 @@
 # Overlay Timer REST API
 
+## Launcher and automatic updates (Windows x64)
+
+Run `./build.ps1` to build both executables. Keep `FloatingTimerLauncher.exe` and
+`OverlayTimer.exe` together in a writable folder, alongside your existing JSON
+settings. Point desktop and startup shortcuts at **FloatingTimerLauncher.exe**.
+Opening `OverlayTimer.exe` directly still works, but bypasses updates.
+
+On every launch:
+
+1. Verify and install any previously staged update before starting the timer.
+2. Check the assets on the exact GitHub release tag
+   [`latest`](https://github.com/shubham2110/AI.FloatingTimer/releases/tag/latest).
+   Compare the `OverlayTimer.exe` asset's SHA-256 against the installed executable;
+   replacing an asset under the same tag is detected without a version-number change.
+3. Download changed content, verify its size, SHA-256 and Windows x64 executable
+   header, install it as `OverlayTimer.exe`, and start it.
+4. If checking/downloading is still running after two minutes, start the installed
+   timer. The launcher remains alive in the background until the download finishes
+   (each HTTP request has a 30-minute timeout). It leaves `OverlayTimer.pending.exe`
+   and `update-pending.json` beside the app for the next launch. It does not restart
+   or replace the active timer after this fallback.
+
+Network errors, rate limits, missing assets and invalid downloads fall back to the
+installed timer. Partial downloads never replace it. Updates retain
+`OverlayTimer.previous.exe`; interrupted replacements recover from that backup.
+If Windows refuses replacement because the timer is running, the update stays
+pending: quit the timer and open the launcher again. Concurrent launchers are
+serialized with an OS file lock, released automatically if the launcher crashes.
+Errors are recorded in `launcher.log`.
+
+The two-minute limit bounds waiting for the internet; Windows process startup and
+local disk/antivirus operations can add time. An existing app is required for the
+offline/timeout fallback, so distribute both executables initially. Settings, peer
+data and activity files are preserved. The backup is also tried if Windows cannot
+start the installed executable; this does not detect crashes after process startup.
+
+For releases, upload both `OverlayTimer.exe` and `FloatingTimerLauncher.exe` with
+the same names used locally. The updater selects only `OverlayTimer.exe` and ignores
+the launcher asset when checking for timer updates.
+The launcher requires GitHub's `sha256:` asset digest. It is updated manually;
+publishing a new release alone does not update the launcher itself. No release is
+published by the build script.
+
 ## Overview
 
 The timer exposes an HTTP API on port `18081` by default (`timer_port` in configuration). The same executable serves the management UI on `18082` (`ui_discovery_port`). The ports must differ; both are reserved before services start. This reference uses only relative API paths so the UI is not tied to a particular machine.

@@ -23,6 +23,9 @@ coverage*.out
 *~
 *.swp
 *.swo
+launcher.lock
+update-pending.json
+OverlayTimer.download
 
 # Local screenshots and operating-system metadata
 /Screenshot *.png
