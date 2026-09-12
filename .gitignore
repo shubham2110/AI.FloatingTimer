@@ -1,0 +1,31 @@
+# Compiled binaries and build output
+*.exe
+*.test
+*.pdb
+/bin/
+/build/
+/dist/
+
+# Runtime logs and machine-specific data (including on-behalf timer folders)
+*.log
+logs/
+overlay_timer_config.json
+overlay_ui_pcs.json
+overlay_ui_activity.csv
+
+# Test coverage and profiling output
+coverage*.out
+/coverage/
+*.prof
+
+# Temporary files and editor backups
+*.tmp
+*~
+*.swp
+*.swo
+
+# Local screenshots and operating-system metadata
+/Screenshot *.png
+.DS_Store
+Thumbs.db
+Desktop.ini
