@@ -6,15 +6,15 @@
     <title>Overlay Timer · Browser Manager</title>
     <style>
       :root {
-        --bg: #f4f6f8;
-        --panel: #fff;
-        --line: #d8dee6;
-        --text: #17202a;
-        --muted: #687483;
-        --blue: #1769aa;
-        --blue-bg: #eaf3fb;
-        --green: #16834b;
-        --red: #c9343e;
+        --bg: #eaeef4;
+        --panel: #ffffff;
+        --line: #dfe5ee;
+        --text: #16233a;
+        --muted: #5c6b80;
+        --blue: #2563eb;
+        --blue-bg: #e7effd;
+        --green: #15803d;
+        --red: #dc2626;
       }
       * {
         box-sizing: border-box;
@@ -33,7 +33,7 @@
         flex-wrap: wrap;
         gap: 12px;
         padding: 0 22px;
-        background: #fff;
+        background: linear-gradient(#ffffff, #fbfcfe);
         border-bottom: 1px solid var(--line);
         display: flex;
         align-items: center;
@@ -64,6 +64,7 @@
         border: 1px solid var(--line);
         border-radius: 10px;
         padding: 16px;
+        box-shadow: 0 1px 3px rgba(22, 35, 58, 0.06);
       }
       .list {
         display: grid;
@@ -133,7 +134,7 @@
       input,
       select {
         font: inherit;
-        border: 1px solid #bcc6d2;
+        border: 1px solid #c6d0dd;
         border-radius: 6px;
         padding: 8px 10px;
         background: #fff;
@@ -144,11 +145,15 @@
       }
       button:hover {
         border-color: var(--blue);
+        background: #f3f7fe;
       }
       button.primary {
         background: var(--blue);
         border-color: var(--blue);
         color: #fff;
+      }
+      button.primary:hover {
+        background: #1d4ed8;
       }
       button.danger {
         color: var(--red);
@@ -162,7 +167,8 @@
         max-width: calc(100vw - 24px);
       }
       dialog::backdrop {
-        background: #17202a66;
+        background: rgba(15, 23, 42, 0.5);
+        backdrop-filter: blur(2px);
       }
       label {
         display: block;
@@ -184,6 +190,15 @@
         border: 1px solid var(--line);
         border-radius: 10px;
         padding: 15px;
+        box-shadow: 0 1px 3px rgba(22, 35, 58, 0.06);
+        transition: box-shadow 0.15s ease;
+      }
+      .dashboard-card:hover {
+        box-shadow: 0 4px 14px rgba(22, 35, 58, 0.1);
+      }
+      .mobile-timer-buttons,
+      .mobile-detail-controls {
+        display: none;
       }
       .dashboard-head {
         display: flex;
@@ -214,24 +229,125 @@
         padding: 15px;
         border: 1px solid var(--line);
         border-radius: 8px;
-        background: #f8fafc;
+        background: #f6f9fd;
       }
       .detail-card h3 {
         margin: 0 0 12px;
       }
       @media (max-width: 720px) {
+        body {
+          font-size: 11px;
+        }
+        header {
+          min-height: 42px;
+          padding: 6px 8px;
+          gap: 6px;
+        }
+        h1 {
+          font-size: 13px;
+        }
+        .header-actions {
+          gap: 4px;
+        }
+        button,
+        input,
+        select {
+          padding: 4px 5px;
+          border-radius: 4px;
+        }
         .layout,
         .detail-grid {
           grid-template-columns: 1fr;
         }
         .wrap {
-          padding: 12px;
+          padding: 7px;
         }
         .time {
-          font-size: 43px;
+          font-size: 32px;
         }
         .dashboard-grid {
-          grid-template-columns: 1fr;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 7px;
+        }
+        #dashboard > .top {
+          align-items: center;
+        }
+        #dashboard > .top h2 {
+          font-size: 14px;
+        }
+        #discoveryStatus,
+        #dashboard > .top > .row {
+          display: none;
+        }
+        #dashboardGrid {
+          margin-top: 7px !important;
+        }
+        .dashboard-card {
+          min-width: 0;
+          padding: 7px;
+          border-radius: 6px;
+        }
+        .dashboard-head {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+          gap: 4px;
+        }
+        .dashboard-head > div {
+          min-width: 0;
+        }
+        .dashboard-head b,
+        .dashboard-head .hint {
+          display: block;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .dashboard-time {
+          font-size: 20px;
+          margin: 3px 0 1px;
+          letter-spacing: 0;
+        }
+        .dashboard-card > .row {
+          margin-top: 4px !important;
+          gap: 4px;
+          flex-wrap: nowrap;
+        }
+        .desktop-timer-buttons,
+        .desktop-detail-controls {
+          display: none;
+        }
+        .mobile-timer-buttons {
+          display: grid;
+          grid-template-columns: minmax(42px, 1fr) 27px 27px;
+          width: 100%;
+          gap: 4px;
+        }
+        .mobile-detail-controls {
+          display: flex;
+          gap: 4px;
+        }
+        .mobile-timer-buttons button {
+          min-width: 0;
+        }
+        .compact {
+          margin-top: 4px;
+          padding-top: 4px;
+        }
+        .compact .row {
+          display: grid;
+          grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr) 30px auto;
+          gap: 3px;
+        }
+        .compact input,
+        .compact select {
+          width: 100%;
+          min-width: 0;
+          padding-inline: 3px;
+        }
+        .dashboard-card > .hint[id^="seen-"],
+        .dashboard-card > .hint[id^="da-"],
+        .dashboard-card > .hint[id^="dm-"] {
+          display: none;
         }
       }
       label input { max-width: 100%; }
@@ -241,7 +357,11 @@
       .dashboard-head, .top { overflow-wrap: anywhere; }
       button:disabled { opacity: .55; cursor: default; }
       button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
-      @media(max-width:720px) { header { padding: 14px 12px; } }
+      @media(max-width:420px) {
+        header .header-actions button {
+          font-size: 10px;
+        }
+      }
 
       /* Modal & Tab styles for Settings */
       .modal-dialog {
@@ -253,14 +373,14 @@
         max-width: calc(100vw - 24px);
         padding: 0;
         overflow: hidden;
-        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
+        box-shadow: 0 16px 40px rgba(15, 23, 42, 0.22);
       }
       .modal-header {
         display: flex;
         justify-content: space-between;
         align-items: center;
         padding: 16px 20px;
-        background: #f8fafc;
+        background: #f4f8fd;
         border-bottom: 1px solid var(--line);
       }
       .modal-header h2 {
@@ -277,13 +397,13 @@
         border-radius: 4px;
       }
       .close-btn:hover {
-        background: #e2e8f0;
+        background: #e5ecf5;
         color: var(--text);
       }
       .tab-bar {
         display: flex;
         border-bottom: 1px solid var(--line);
-        background: #f1f5f9;
+        background: #eef2f8;
       }
       .tab-btn {
         flex: 1;
@@ -360,12 +480,19 @@
             <div id="time" class="time">--:--:--</div>
             <div id="status" class="status">Connecting...</div>
             <div class="controls">
-              <button class="primary" onclick="callSelected('play')">Play</button>
-              <button onclick="callSelected('pause')">Pause</button>
-              <button onclick="callSelected('reset')">Reset</button>
-              <button onclick="callSelected('dismiss')">Dismiss alert</button>
-              <button title="Show TIME UP" onclick="callSelected('show')">Show</button>
-              <button title="Hide TIME UP" onclick="callSelected('hide')">Hide</button>
+              <div class="desktop-detail-controls">
+                <button class="primary" onclick="callSelected('play')">Play</button>
+                <button onclick="callSelected('pause')">Pause</button>
+                <button onclick="callSelected('reset')">Reset</button>
+                <button onclick="callSelected('dismiss')">Dismiss alert</button>
+                <button title="Show TIME UP" onclick="callSelected('show')">Show</button>
+                <button title="Hide TIME UP" onclick="callSelected('hide')">Hide</button>
+              </div>
+              <div class="mobile-detail-controls">
+                <button class="primary mobile-toggle" onclick="toggleSelected(this)">Play</button>
+                <button title="Show TIME UP" onclick="callSelected('show')">S</button>
+                <button title="Hide TIME UP" onclick="callSelected('hide')">H</button>
+              </div>
             </div>
             <div id="agents"></div>
             <div class="detail-grid">
@@ -585,7 +712,7 @@
         $("activePCs").innerHTML = pcs.length
           ? pcs
               .map(
-                (p) => `<label class="row" style="margin:0;padding:6px 4px;border-bottom:1px solid #f1f5f9">
+                (p) => `<label class="row" style="margin:0;padding:6px 4px;border-bottom:1px solid #eef2f8">
           <input type="checkbox" ${isActive(p) ? "checked" : ""} ${pendingActive.has(p.id) ? "disabled" : ""}
             onchange="setPCActive(${argument(p.id)}, this.checked)">
           <span><b>${esc(p.name)}</b> <small class="hint">${esc(p.address)}</small></span></label>`,
@@ -692,7 +819,7 @@
             </div>`;
       }
       function timerButtons(id, agent = "") {
-        return ["play", "pause", "reset", "dismiss", "show", "hide"]
+        const desktop = ["play", "pause", "reset", "dismiss", "show", "hide"]
           .map((action) => {
             const route = agent ? agent + "/" + action : action;
             const label =
@@ -700,6 +827,32 @@
             return `<button title="${action} TIME UP / timer" onclick="quick(${argument(id)}, ${argument(route)})">${label}</button>`;
           })
           .join("");
+        const prefix = agent ? agent + "/" : "";
+        return `<span class="desktop-timer-buttons">${desktop}</span><span class="mobile-timer-buttons">
+          <button class="primary mobile-toggle" data-pc="${esc(id)}" data-agent="${esc(agent)}" onclick="toggleTimer(this, ${argument(id)}, ${argument(agent)})">Play</button>
+          <button title="Show TIME UP" onclick="quick(${argument(id)}, ${argument(prefix + "show")})">S</button>
+          <button title="Hide TIME UP" onclick="quick(${argument(id)}, ${argument(prefix + "hide")})">H</button>
+        </span>`;
+      }
+
+      function updateToggle(id, agent, isRunning) {
+        document.querySelectorAll(".mobile-toggle").forEach((button) => {
+          const matchesCard = button.dataset.pc === String(id) && button.dataset.agent === String(agent || "");
+          const matchesDetail = !button.dataset.pc && selected === id && !agent;
+          if (matchesCard || matchesDetail) {
+            button.dataset.running = isRunning ? "true" : "false";
+            button.textContent = isRunning ? "Pause" : "Play";
+          }
+        });
+      }
+
+      async function toggleTimer(button, id, agent = "") {
+        const action = button.dataset.running === "true" ? "pause" : "play";
+        await quick(id, agent ? agent + "/" + action : action);
+      }
+
+      async function toggleSelected(button) {
+        await callSelected(button.dataset.running === "true" ? "pause" : "play");
       }
       function cardHTML(p) {
         const id = esc(p.id),
@@ -794,6 +947,8 @@
               te.textContent = fmt(t.remaining_seconds);
               se.className = "status " + (t.time_up_visible ? "alert" : t.is_running ? "running" : "");
               se.textContent = statusLabel(t);
+              updateToggle(p.id, "", t.is_running);
+              (t.on_behalf_of || []).forEach((agent) => updateToggle(p.id, agent.id, agent.is_running));
               renderAgentSummary(p.id, t.on_behalf_of || []);
             } catch (e) {
               const se = $("ds-" + p.id);
@@ -816,6 +971,8 @@
           $("time").textContent = fmt(t.remaining_seconds);
           $("status").className = "status " + (t.time_up_visible ? "alert" : t.is_running ? "running" : "");
           $("status").textContent = statusLabel(t);
+          updateToggle(p.id, "", t.is_running);
+          (t.on_behalf_of || []).forEach((agent) => updateToggle(p.id, agent.id, agent.is_running));
           renderAgents(t.on_behalf_of || []);
         } catch (e) {
           if (selected !== p.id) return;
