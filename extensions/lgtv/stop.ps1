@@ -1,0 +1,1 @@
+D:\Software\TimeOutLauncher\lgtv_remote.exe -ip 192.168.1.4 -port 3001 active-app open-url http://192.168.1.15/timeout.html

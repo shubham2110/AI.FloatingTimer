@@ -1,0 +1,229 @@
+// Run with: node --test ui_polling_test.cjs
+// Exercise the actual embedded UI script with a simulated clock and network.
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync('ui.html', 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1];
+const sample = (name, inactive = false) => ({ id: name, name, address: `http://${name}:18081`, inactive });
+const status = { remaining_seconds: 300, is_running: true, time_up_visible: false, on_behalf_of: [] };
+const flush = async () => { for (let i = 0; i < 25; i++) await Promise.resolve(); };
+
+function harness(initial, settings = { pollIntervalSeconds: 1, falsePolling: false }) {
+  let now = 0, serial = 0;
+  const timers = new Map(), nodes = new Map(), calls = [];
+  const node = id => {
+    if (!nodes.has(id)) nodes.set(id, {
+      textContent: '', innerHTML: '', className: '', hidden: false, children: [], dataset: {},
+      close() { this.open = false; }, showModal() { this.open = true; },
+    });
+    return nodes.get(id);
+  };
+  const storage = new Map();
+  if (settings !== null) storage.set('overlay-timer-ui-settings-v1', JSON.stringify(settings));
+  const state = { list: initial, stallList: false, slow: new Set(), responses: new Map(), calls, node, storage };
+  function schedule(fn, delay, interval = 0) {
+    const id = ++serial;
+    timers.set(id, { fn, at: now + delay, interval });
+    return id;
+  }
+  const context = vm.createContext({
+    console, AbortController,
+    performance: { now: () => now },
+    localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
+    document: { getElementById: node, querySelectorAll: () => [] },
+    setTimeout: (fn, delay) => schedule(fn, delay), clearTimeout: id => timers.delete(id),
+    setInterval: (fn, delay) => schedule(fn, delay, delay), clearInterval: id => timers.delete(id),
+    fetch(url, options = {}) {
+      const call = { url, at: now, pending: true, aborted: false };
+      calls.push(call);
+      return new Promise((resolve, reject) => {
+        call.resolve = data => {
+          call.pending = false;
+          resolve({ ok: true, json: async () => data });
+        };
+        options.signal?.addEventListener('abort', () => {
+          call.aborted = true;
+          call.pending = false;
+          reject(new Error('aborted'));
+        }, { once: true });
+        if (url === '/api/pcs') {
+          if (!state.stallList) call.resolve(structuredClone(state.list));
+        } else if (!state.slow.has(url)) call.resolve(structuredClone(state.responses.get(url) || status));
+      });
+    },
+  });
+  state.run = code => vm.runInContext(code, context);
+  state.start = () => vm.runInContext(source, context);
+  state.advance = async milliseconds => {
+    const end = now + milliseconds;
+    await flush();
+    while (true) {
+      const next = [...timers].filter(([, t]) => t.at <= end).sort((a, b) => a[1].at - b[1].at)[0];
+      if (!next) break;
+      const [id, timer] = next;
+      now = timer.at;
+      if (timer.interval) timer.at += timer.interval;
+      else timers.delete(id);
+      timer.fn();
+      await flush();
+    }
+    now = end;
+    await flush();
+  };
+  return state;
+}
+
+test('one online PC polls each second while nine offline PCs time out independently', async () => {
+  const h = harness(Array.from({ length: 10 }, (_, i) => sample(`pc${i}`)));
+  for (let i = 1; i < 10; i++) h.slow.add(`http://pc${i}:18081/status`);
+  h.start();
+  await h.advance(3500);
+  assert.deepEqual(h.calls.filter(c => c.url === 'http://pc0:18081/status').map(c => c.at), [0, 1000, 2000, 3000]);
+  for (let i = 1; i < 10; i++) assert.equal(h.calls.filter(c => c.url === `http://pc${i}:18081/status`).length, 1);
+  await h.advance(2500);
+  assert.deepEqual(h.calls.filter(c => c.url === 'http://pc0:18081/status').map(c => c.at), [0, 1000, 2000, 3000, 4000, 5000, 6000]);
+  assert.ok(h.calls.some(c => c.url === 'http://pc1:18081/status' && c.aborted));
+});
+
+test('a stalled saved-list refresh does not delay status polling or duplicate list requests', async () => {
+  const h = harness([sample('online')]);
+  h.start();
+  await h.advance(14000);
+  h.stallList = true;
+  await h.advance(1000);
+  h.run('refreshSavedList(); refreshSavedList();');
+  await h.advance(5000);
+  assert.deepEqual(h.calls.filter(c => c.url === '/api/pcs').map(c => c.at), [0, 15000]);
+  assert.equal(h.calls.filter(c => c.url.endsWith('/status')).length, 21);
+  assert.match(h.node('discoveryStatus').textContent, /Could not refresh saved PCs/);
+  h.stallList = false;
+  h.list.push(sample('new'));
+  await h.advance(10000);
+  assert.ok(h.calls.some(c => c.url === 'http://new:18081/status' && c.at === 30000));
+});
+
+test('ticks, manual refresh and detail navigation share pending requests', async () => {
+  const h = harness([sample('slow'), sample('online')]);
+  h.slow.add('http://slow:18081/status');
+  h.start();
+  await h.advance(0);
+  h.run('showDetail("slow"); pollAll(); refreshNow();');
+  await h.advance(3000);
+  assert.equal(h.calls.filter(c => c.url === 'http://slow:18081/status').length, 1);
+  assert.ok(h.calls.some(c => c.url === 'http://online:18081/status' && c.at === 3000));
+});
+
+test('list changes stop removed/inactive PCs and replace changed addresses', async () => {
+  const h = harness([sample('old'), sample('removed'), sample('disabled')]);
+  h.slow.add('http://old:18081/status');
+  h.start();
+  await h.advance(0);
+  const old = h.calls.find(c => c.url === 'http://old:18081/status');
+  h.list = [{ ...sample('old'), address: 'http://new-address:18081' }, sample('disabled', true)];
+  await h.run('load()');
+  await h.advance(2000);
+  assert.equal(old.aborted, true);
+  assert.equal(h.calls.filter(c => c.url === 'http://removed:18081/status').length, 1);
+  assert.equal(h.calls.filter(c => c.url === 'http://disabled:18081/status').length, 1);
+  assert.equal(h.calls.filter(c => c.url === 'http://new-address:18081/status').length, 3);
+  assert.equal(h.node('ds-old').textContent, 'Running');
+});
+
+test('default settings poll every five seconds and leave false polling disabled', async () => {
+  const h = harness([sample('pc')], null);
+  h.start();
+  await h.advance(4000);
+  assert.equal(h.node('dt-pc').textContent, '00:05:00');
+  assert.equal(h.calls.filter(c => c.url.endsWith('/status')).length, 1);
+  await h.advance(6000);
+  assert.deepEqual(h.calls.filter(c => c.url.endsWith('/status')).map(c => c.at), [0, 5000, 10000]);
+});
+
+test('settings apply to all schedules, preserve pending requests, and survive reload', async () => {
+  const h = harness([sample('online'), sample('slow')], null);
+  h.slow.add('http://slow:18081/status');
+  h.start();
+  await h.advance(1000);
+  h.run('openSettings()');
+  assert.equal(h.node('pollInterval').value, 5);
+  assert.equal(h.node('falsePolling').checked, false);
+  h.node('pollInterval').value = '2';
+  h.node('falsePolling').checked = true;
+  h.run('saveSettings({preventDefault() {}})');
+  await h.advance(4000);
+  assert.deepEqual(h.calls.filter(c => c.url === 'http://online:18081/status').map(c => c.at), [0, 3000, 5000]);
+  assert.deepEqual(h.calls.filter(c => c.url === 'http://slow:18081/status').map(c => c.at), [0, 5000]);
+  const saved = JSON.parse(h.storage.get('overlay-timer-ui-settings-v1'));
+  assert.deepEqual(saved, { pollIntervalSeconds: 2, falsePolling: true });
+  const reloaded = harness([sample('pc')], saved);
+  reloaded.start();
+  await reloaded.advance(3000);
+  assert.deepEqual(reloaded.calls.filter(c => c.url.endsWith('/status')).map(c => c.at), [0, 2000]);
+  assert.equal(reloaded.node('dt-pc').textContent, '00:04:59');
+});
+
+test('false polling interpolates running timers and agents, preserves paused timers, and resyncs', async () => {
+  const h = harness([sample('pc')], { pollIntervalSeconds: 5, falsePolling: true });
+  h.responses.set('http://pc:18081/status', { ...status, remaining_seconds: 2135, on_behalf_of: [
+    { ...status, id: '1', name: 'Running agent', remaining_seconds: 20 },
+    { ...status, id: '2', name: 'Paused agent', remaining_seconds: 40, is_running: false },
+  ] });
+  h.start();
+  await h.advance(0);
+  h.run('showDetail("pc")');
+  await h.advance(2000);
+  assert.equal(h.node('dt-pc').textContent, '00:35:33');
+  assert.equal(h.node('time').textContent, '00:35:33');
+  assert.equal(h.node('agent-time-1').textContent, '00:00:18 · Running');
+  assert.equal(h.node('agent-time-2').textContent, '00:00:40 · Paused');
+  const calls = h.calls.length;
+  h.run('falsePollingTick(); falsePollingTick();');
+  assert.equal(h.calls.length, calls, 'local display ticks must not send requests');
+  h.responses.set('http://pc:18081/status', { ...status, remaining_seconds: 90, is_running: false });
+  await h.advance(4000);
+  assert.equal(h.node('dt-pc').textContent, '00:01:30');
+  assert.equal(h.node('ds-pc').textContent, 'Paused');
+});
+
+test('false polling clamps at zero without inventing TIME UP and disabling restores the real sample', async () => {
+  const h = harness([sample('pc')], { pollIntervalSeconds: 30, falsePolling: true });
+  h.responses.set('http://pc:18081/status', { ...status, remaining_seconds: 2 });
+  h.start();
+  await h.advance(4000);
+  assert.equal(h.node('dt-pc').textContent, '00:00:00');
+  assert.equal(h.node('ds-pc').textContent, 'Running');
+  h.run('applySettings({pollIntervalSeconds:30, falsePolling:false})');
+  assert.equal(h.node('dt-pc').textContent, '00:00:02');
+  await h.advance(2000);
+  assert.equal(h.node('dt-pc').textContent, '00:00:02');
+});
+
+test('offline timers freeze until a fresh successful response arrives', async () => {
+  const h = harness([sample('pc')], { pollIntervalSeconds: 5, falsePolling: true });
+  h.start();
+  await h.advance(0);
+  h.slow.add('http://pc:18081/status');
+  await h.advance(9500);
+  assert.equal(h.node('ds-pc').textContent, 'Offline');
+  const frozen = h.node('dt-pc').textContent;
+  await h.advance(2500);
+  assert.equal(h.node('dt-pc').textContent, frozen);
+  h.slow.clear();
+  h.responses.set('http://pc:18081/status', { ...status, remaining_seconds: 120 });
+  await h.advance(3000);
+  assert.equal(h.node('ds-pc').textContent, 'Running');
+  assert.equal(h.node('dt-pc').textContent, '00:02:00');
+});
+
+test('invalid settings cannot overwrite the current interval', async () => {
+  const h = harness([], null);
+  h.start();
+  await h.advance(0);
+  for (const value of ['0', '-1', '1.5', '301', 'no']) {
+    h.node('pollInterval').value = value;
+    h.run('saveSettings({preventDefault() {}})');
+    assert.match(h.node('settingsMessage').textContent, /whole number/);
+    assert.equal(h.run('uiSettings.pollIntervalSeconds'), 5);
+  }
+});

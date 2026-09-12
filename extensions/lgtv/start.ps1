@@ -1,0 +1,1 @@
+D:\Software\TimeOutLauncher\lgtv_remote.exe -ip 192.168.1.4 -port 3001 launch com.webos.app.hdmi1

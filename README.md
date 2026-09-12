@@ -460,6 +460,227 @@ the standard timer fields. External commands come only from local configuration 
 remain asynchronous. Command ordering is not guaranteed. Each timer's activity CSV is
 stored in its numeric subdirectory, with the same columns as the primary activity CSV.
 
+## Set up on-behalf timers
+
+Use on-behalf mode when **your PC keeps its own timer and also keeps separate
+countdowns for other machines**. Your PC owns and runs all those countdowns. Each
+on-behalf timer is independent of your main timer and of the other on-behalf timers.
+
+There is no special "on-behalf machine" installation mode. Add an `on_behalf_of`
+entry to the configuration on **the PC doing the counting**. The entry's commands
+determine what happens on the other machine when time expires or the alert is hidden.
+
+This example uses these addresses; replace them with your real LAN addresses:
+
+| Machine | Address | Responsibility |
+|---|---|---|
+| Your PC (PC A) | `192.168.1.10` | Runs its own timer and on-behalf timer `1` for PC B. |
+| Other machine (PC B) | `192.168.1.20` | In the remote-alert example, runs Overlay Timer to display/hide TIME UP when PC A requests it. |
+
+The countdown for PC B is stored **on PC A**, at
+`http://192.168.1.10:18081/1/status`. PC A's own timer remains at
+`http://192.168.1.10:18081/status`. PC B's `/status` describes PC B's separate local
+timer; it does not mirror the on-behalf countdown on PC A.
+
+### 1. Decide whether the other machine needs to show an alert
+
+- **Only track its time on your PC:** PC B does not need Overlay Timer. On PC A,
+  use the configuration below but set `show_command` and `hide_command` to `[]`.
+  You can view/control the countdown in PC A's manager. Expiry updates its virtual
+  alert state; it does not open a separate overlay on either PC.
+- **Show TIME UP on PC B:** use both configurations below. PC A sends HTTP commands
+  to Overlay Timer running on PC B. These commands show/hide the full-screen alert;
+  they do not send PC A's remaining seconds to PC B's countdown overlay.
+
+### 2. Configure your PC (PC A)
+
+Quit Overlay Timer from the tray before editing. Open `overlay_timer_config.json`
+beside **PC A's `OverlayTimer.exe`**. Add or replace its `on_behalf_of` array. Keep
+your existing settings for your own timer unless you intend to change them.
+
+Here is a complete example configuration. The commands use Windows PowerShell,
+running on PC A, to call PC B's timer API:
+
+```json
+{
+  "kill_on_time_up": false,
+  "apps_to_close_on_time_up": [],
+  "force_kill_after_seconds": 2,
+  "friendly_name": "My PC - Timer Host",
+  "timer_port": 18081,
+  "ui_discovery_port": 18082,
+  "discovery": {
+    "enabled": false,
+    "interval_seconds": 300,
+    "cidr_ranges": [],
+    "connect_timeout_milliseconds": 350,
+    "maximum_concurrency": 32
+  },
+  "on_behalf_of": [
+    {
+      "id": "1",
+      "name": "PC B",
+      "show_command": [
+        "powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "$ErrorActionPreference = 'Stop'; Invoke-RestMethod -Method Post -Uri 'http://192.168.1.20:18081/show' -TimeoutSec 8 | Out-Null"
+      ],
+      "hide_command": [
+        "powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "$ErrorActionPreference = 'Stop'; Invoke-RestMethod -Method Post -Uri 'http://192.168.1.20:18081/hide' -TimeoutSec 8 | Out-Null"
+      ],
+      "command_timeout_seconds": 10
+    }
+  ]
+}
+```
+
+Replace `192.168.1.20` in **both commands** with PC B's address. If PC B uses a
+different timer port, replace `18081` in both commands too. The URL must point to
+PC B's timer API port, not its management UI port.
+
+| Entry field | Meaning |
+|---|---|
+| `id` | A unique string containing digits, such as `"1"` or `"2"`. It selects the URL prefix on PC A. Invalid or duplicate IDs are ignored at startup. |
+| `name` | Label shown in the manager. An empty name becomes `Agent <id>`. |
+| `show_command` | Program and arguments to execute on PC A when this timer reaches zero or receives `show`. Use `[]` for no external action. |
+| `hide_command` | Program and arguments to execute on PC A for every other supported timer command. Use `[]` for no external action. |
+| `command_timeout_seconds` | Timeout for each command process, not the countdown duration. Values below 1, or omission, use 10 seconds. |
+
+Commands are JSON arrays: the first string is the executable, and subsequent
+strings are individual arguments. There is no automatic shell, remote execution,
+or substitution of the timer ID/time into arguments. The PowerShell example
+explicitly starts a shell and explicitly supplies the destination URL. For custom
+programs or scripts, prefer absolute paths and double Windows backslashes in JSON,
+for example `"C:\\TimerScripts\\show.ps1"`. Commands run under the account running
+Overlay Timer on PC A and must work without interactive prompts.
+
+### 3. Configure the other machine (PC B) for remote alerts
+
+Skip this step if you only want to track time on PC A with empty command arrays.
+
+Keep `FloatingTimerLauncher.exe` and `OverlayTimer.exe` on PC B. Beside PC B's
+`OverlayTimer.exe`, use this `overlay_timer_config.json` (or merge the settings
+into its existing configuration):
+
+```json
+{
+  "kill_on_time_up": false,
+  "apps_to_close_on_time_up": [],
+  "force_kill_after_seconds": 2,
+  "friendly_name": "PC B",
+  "timer_port": 18081,
+  "ui_discovery_port": 18082,
+  "discovery": {
+    "enabled": false,
+    "interval_seconds": 300,
+    "cidr_ranges": [],
+    "connect_timeout_milliseconds": 350,
+    "maximum_concurrency": 32
+  },
+  "on_behalf_of": []
+}
+```
+
+PC B does **not** need an entry pointing back to PC A. It only receives ordinary
+`POST /show` and `POST /hide` requests. Start the launcher on both PCs after saving
+their configurations; configuration changes require an app restart, not a rebuild.
+Run PC B's app in the logged-in desktop session where the alert should appear.
+
+Allow PC A to reach PC B's TCP timer port (`18081` here) through Windows Firewall.
+Using the same port numbers on different PCs is fine; the timer and UI ports must
+differ within each PC. Discovery and Distribute are not required for these hooks.
+Keep these unauthenticated APIs on your trusted LAN; no public port forwarding is
+needed.
+
+### 4. Verify the connection and use the timers
+
+From PowerShell on **PC A**, check that PC B's API is reachable:
+
+```powershell
+Invoke-RestMethod -Uri 'http://192.168.1.20:18081/identity' -TimeoutSec 8
+```
+
+The response should identify `service` as `overlay-timer`. Test the remote alert
+manually, running the hide command after observing TIME UP on PC B:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri 'http://192.168.1.20:18081/show' -TimeoutSec 8
+Invoke-RestMethod -Method Post -Uri 'http://192.168.1.20:18081/hide' -TimeoutSec 8
+```
+
+Showing TIME UP also minimizes windows on PC B; hiding it restores them. A forced
+`/show` does not invoke PC B's configured app-closing behavior.
+
+Open `http://192.168.1.10:18082` in your browser. Add/select **PC A** using its
+timer address `http://192.168.1.10:18081`, then open **Details**. The
+**On-behalf agents** section contains `PC B`. Use its **Set** button to enter a
+duration in **seconds**, then its **Play** button. Its **±** button also takes
+seconds. On mobile the agent's Play/Pause control is a toggle. The main controls
+above this section still operate PC A's own timer.
+
+You can also control PC B's on-behalf countdown through **PC A's** API:
+
+```powershell
+# Start a separate five-minute countdown for PC B, owned by PC A.
+Invoke-RestMethod -Method Post -Uri 'http://192.168.1.10:18081/1/set?seconds=300'
+Invoke-RestMethod -Method Post -Uri 'http://192.168.1.10:18081/1/play'
+
+# Inspect, add one minute, pause, or resume that same timer.
+Invoke-RestMethod -Uri 'http://192.168.1.10:18081/1/status'
+Invoke-RestMethod -Method Post -Uri 'http://192.168.1.10:18081/1/tweak?amount=60'
+Invoke-RestMethod -Method Post -Uri 'http://192.168.1.10:18081/1/pause'
+Invoke-RestMethod -Method Post -Uri 'http://192.168.1.10:18081/1/play'
+```
+
+To test expiry quickly, set `seconds=10` and play, then wait for PC B's alert.
+`POST /1/hide` or `/1/dismiss` hides it without resetting the countdown;
+`POST /1/reset` clears that countdown and hides it. Routes without `/1`, such as
+`POST /set`, affect PC A's own timer.
+
+### Hook behavior and limits
+
+| Event on PC A's on-behalf timer | Local countdown/alert state | Command executed on PC A |
+|---|---|---|
+| A running positive countdown reaches zero | Marks the virtual alert visible. | `show_command` |
+| `show` | Marks the alert visible without changing time/running state. | `show_command` |
+| `set`, `tweak`, `play`, `pause`, `toggle`, `reset`, `hide`, or `dismiss` | Applies that action and clears the virtual alert. | `hide_command`, even if the alert was already hidden. |
+
+The hooks run asynchronously. An API success confirms that PC A accepted the
+timer action; it does not confirm that PC B received or displayed the alert.
+`time_up_visible` in `/1/status` is PC A's virtual state, not feedback from PC B.
+Command completion order is not guaranteed, so rapid show/hide operations can
+finish out of order. There is no automatic retry or replay if PC B is offline
+when a hook runs. After restoring the connection, send `/1/show` or `/1/hide`
+again as appropriate.
+
+PC A must stay running and awake to keep these countdowns. New on-behalf timers
+start paused at zero; their times/running states are not restored after restart.
+The browser can be closed while counting. In this example, PC B must stay running
+and reachable to display the remote alert. Do not run a second independent
+countdown on PC B expecting it to stay synchronized with PC A's `/1` timer.
+
+### Add more machines or troubleshoot
+
+For another machine, add another object to **PC A's** `on_behalf_of` array with
+`"id": "2"`, its display name, and its own show/hide URLs. Its countdown will be at
+`http://192.168.1.10:18081/2/status`. Use one owner for each countdown; neither Add PC
+in the manager nor automatic discovery creates `on_behalf_of` entries.
+
+| Problem | What to check |
+|---|---|
+| No On-behalf agents section, or `/1/status` returns 404 | Edit the config beside the running PC A executable, use a unique numeric string ID, and restart PC A's app. |
+| Configuration seems ignored | Check JSON syntax (no comments or trailing commas). Invalid JSON causes default settings to be used; startup errors are in `overlay_timer-YYYY-MM-DD.log`. |
+| Countdown works but PC B shows no alert | First run the direct `/identity` and `/show` checks from PC A. Check the address, timer port, firewall, PC B's app/session, and the hook log. |
+| Command fails or times out | Inspect `1/overlay_ui_activity.csv` beside PC A's executable. The hook result records output/errors or `command timed out`; timer `2` uses `2/overlay_ui_activity.csv`. |
+| PC A's timer changes instead of PC B's virtual timer | Use the agent's controls or PC A's `/1/...` routes, not PC A's unprefixed routes. |
+| PC B's displayed countdown differs | Expected: this setup sends show/hide only. View the authoritative countdown under PC A's On-behalf agents section. |
+
 ### Management and registry behavior
 
 - `GET /api/pcs` returns all saved non-deleted PCs, including their local `inactive` preference.
@@ -470,8 +691,27 @@ stored in its numeric subdirectory, with the same columns as the primary activit
 - Inactive PCs only appear in **Select active PCs**, not in the dashboard or detail list.
   They are not polled, commanded, probed by discovery, or included in distribution.
   Disabling cancels pending browser requests; commands already delivered cannot be undone.
-- Status polls run from the browser about every two seconds; the saved list refreshes
-  every 15 seconds. **Refresh** immediately reloads the list and fetches active status.
+- Each active PC has an independent status schedule (default **5 seconds**), including while a
+  PC's detail view is open. If its previous request is still pending, only that PC
+  skips the tick; status requests time out after four seconds. Slow/offline PCs do
+  not delay other PCs. Browser throttling in background tabs can slow timers.
+- Open **Settings** in the header to choose a polling interval of **1–300 whole
+  seconds**. It applies to every active PC in this browser. Saving changes updates
+  existing schedules immediately without duplicating pending requests. The settings
+  are saved in browser storage for this manager's origin; other browsers/devices
+  keep their own preferences. No EXE configuration change is needed.
+- **Enable false polling**, below the interval setting, is **off by default**.
+  When enabled, running countdowns update locally every second between real status
+  responses, including on-behalf countdowns in the dashboard and detail view. A
+  fresh response replaces the estimate. Paused timers stay fixed; estimates stop
+  at zero and never trigger TIME UP or send timer commands. If a status request
+  fails, the display is marked offline and the estimate freezes until a successful
+  response. Disabling false polling displays the last actual sample. Local ticks
+  use elapsed time, so delayed browser callbacks do not accumulate countdown drift.
+- The saved list refreshes separately every 15 seconds with a four-second timeout.
+  Failed list refreshes preserve the existing PCs and their status schedules.
+  **Refresh** starts list and status refreshes together; pending requests are reused.
+  Removing, disabling, or changing a PC's address cancels its old requests and schedule.
 - **Discover** calls `POST /api/discovery/run`; progress is read with
   `GET /api/discovery/status`. Discover saves URLs locally without distributing them.
 - **Distribute** calls `POST /api/discovery/distribute` with `{"ids":["selected-pc-id"]}`.

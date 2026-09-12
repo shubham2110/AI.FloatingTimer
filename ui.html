@@ -215,19 +215,168 @@
       .detail-card h3 {
         margin: 0 0 12px;
       }
+      .desktop-timer-buttons {
+        display: inline-flex;
+        gap: 8px;
+      }
+      .mobile-timer-buttons {
+        display: none;
+      }
+      #settingsDialog {
+        min-width: 0;
+        width: min(440px, calc(100vw - 24px));
+      }
+      #settingsDialog input[type="number"] {
+        width: 100%;
+      }
       @media (max-width: 720px) {
+        header {
+          height: auto;
+          min-height: 60px;
+          padding: 8px;
+          flex-wrap: wrap;
+          gap: 6px;
+        }
+        header h1 {
+          font-size: 16px;
+        }
+        .header-actions {
+          flex-wrap: wrap;
+          gap: 4px;
+        }
+        .header-actions button {
+          padding: 6px;
+          font-size: 12px;
+        }
         .layout,
         .detail-grid {
           grid-template-columns: 1fr;
         }
         .wrap {
-          padding: 12px;
+          padding: 8px;
         }
         .time {
           font-size: 43px;
         }
         .dashboard-grid {
-          grid-template-columns: 1fr;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 7px;
+          margin-top: 8px !important;
+        }
+        #dashboard > .top h2 {
+          font-size: 17px;
+          margin-bottom: 0;
+        }
+        #dashboard > .top .hint,
+        .dashboard-card .dashboard-head .hint,
+        .dashboard-card > .hint {
+          display: none;
+        }
+        .dashboard-card {
+          display: grid;
+          min-width: 0;
+          grid-template-columns: minmax(0, 1fr);
+          grid-template-areas:
+            "head"
+            "time"
+            "status"
+            "actions"
+            "compact";
+          gap: 3px;
+          padding: 7px;
+          border-radius: 7px;
+        }
+        .dashboard-grid > .empty {
+          grid-column: 1 / -1;
+        }
+        .dashboard-head {
+          grid-area: head;
+          min-width: 0;
+          align-items: center;
+          gap: 4px;
+        }
+        .dashboard-head > div {
+          min-width: 0;
+        }
+        .dashboard-head b {
+          display: block;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          font-size: 13px;
+        }
+        .dashboard-head > button {
+          flex-shrink: 0;
+          padding: 3px 4px;
+          font-size: 12px;
+        }
+        .dashboard-time {
+          grid-area: time;
+          margin: 0;
+          font-size: 21px;
+          line-height: 1.05;
+        }
+        .dashboard-card > .status {
+          grid-area: status;
+          font-size: 12px;
+          line-height: 1.1;
+        }
+        .dashboard-card > .row {
+          grid-area: actions;
+          margin-top: 0 !important;
+          flex-wrap: nowrap;
+          gap: 4px;
+        }
+        .dashboard-card .mobile-timer-buttons {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto auto;
+          width: 100%;
+        }
+        .desktop-timer-buttons {
+          display: none;
+        }
+        .mobile-timer-buttons {
+          display: inline-flex;
+          gap: 4px;
+        }
+        .mobile-timer-buttons button {
+          min-height: 32px;
+          padding: 4px 8px;
+          font-size: 12px;
+        }
+        .mobile-timer-buttons .mobile-toggle {
+          min-width: 55px;
+        }
+        .dashboard-card .compact {
+          grid-area: compact;
+          margin-top: 3px;
+          padding-top: 5px;
+        }
+        .dashboard-card .compact .row {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto auto;
+          gap: 4px;
+        }
+        .dashboard-card .compact input {
+          width: 100%;
+          min-width: 0;
+        }
+        .dashboard-card .compact input[type="time"] {
+          display: none;
+        }
+        .dashboard-card .compact input,
+        .dashboard-card .compact select,
+        .dashboard-card .compact button {
+          height: 30px;
+          min-width: 0;
+          padding: 3px 4px;
+          font-size: 12px;
+        }
+        .dashboard-card .compact input[type="text"] {
+          flex: 1;
+        }
+        .dashboard-card .compact + .hint {
+          display: none;
         }
       }
     </style>
@@ -241,6 +390,7 @@
         <button id="distributeButton" onclick="distributeNow()">Distribute</button>
         <button id="refreshButton" class="primary" onclick="refreshNow()">⚡ Force Refresh</button>
         <button onclick="showDashboard()">Dashboard</button>
+        <button onclick="openSettings()">Settings</button>
       </div>
     </header>
     <div class="wrap">
@@ -356,14 +506,74 @@
         </div>
       </form>
     </dialog>
+    <dialog id="settingsDialog" aria-labelledby="settingsTitle">
+      <form onsubmit="saveSettings(event)">
+        <h2 id="settingsTitle">Settings</h2>
+        <label for="pollInterval">Polling interval (seconds)</label>
+        <input id="pollInterval" type="number" min="1" max="300" step="1" required />
+        <p class="hint">Applies to all active PCs in this browser. Default: 5 seconds.</p>
+        <label class="row" for="falsePolling">
+          <input id="falsePolling" type="checkbox" /> Enable false polling
+        </label>
+        <p class="hint">Count down running timers on screen every second between real responses.
+          Each response corrects the display. This sends no extra requests and does not control the PCs.
+          Disabled by default.</p>
+        <p id="settingsMessage" class="error" role="status"></p>
+        <div class="row" style="justify-content:flex-end;margin-top:18px">
+          <button type="button" onclick="$('settingsDialog').close()">Cancel</button>
+          <button class="primary" type="submit">Save</button>
+        </div>
+      </form>
+    </dialog>
     <script>
       let pcs = [],
         selected = null;
       const pendingActive = new Map(),
-        pendingRequests = new Map();
-      let lastListFetch = 0,
-        refreshPromise = null;
+        pendingRequests = new Map(),
+        pcPollers = new Map();
+      let listPromise = null;
       const $ = (id) => document.getElementById(id);
+      const SETTINGS_KEY = "overlay-timer-ui-settings-v1";
+      let uiSettings = { pollIntervalSeconds: 5, falsePolling: false };
+      function validPollInterval(value) {
+        return Number.isInteger(value) && value >= 1 && value <= 300;
+      }
+      function restoreSettings() {
+        try {
+          const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
+          if (validPollInterval(saved.pollIntervalSeconds)) uiSettings.pollIntervalSeconds = saved.pollIntervalSeconds;
+          uiSettings.falsePolling = saved.falsePolling === true;
+        } catch {} // Defaults work even if browser storage is unavailable.
+      }
+      function openSettings() {
+        $("pollInterval").value = uiSettings.pollIntervalSeconds;
+        $("falsePolling").checked = uiSettings.falsePolling;
+        $("settingsMessage").textContent = "";
+        $("settingsDialog").showModal();
+      }
+      function saveSettings(event) {
+        event.preventDefault();
+        const seconds = Number($("pollInterval").value);
+        if (!validPollInterval(seconds)) {
+          $("settingsMessage").textContent = "Enter a whole number from 1 to 300 seconds.";
+          return;
+        }
+        applySettings({ pollIntervalSeconds: seconds, falsePolling: $("falsePolling").checked });
+        try {
+          localStorage.setItem(SETTINGS_KEY, JSON.stringify(uiSettings));
+          $("settingsDialog").close();
+        } catch {
+          $("settingsMessage").textContent = "Settings applied for this session, but browser storage is unavailable. They may reset when you reload.";
+        }
+      }
+      function applySettings(settings) {
+        const intervalChanged = settings.pollIntervalSeconds !== uiSettings.pollIntervalSeconds;
+        uiSettings = settings;
+        if (intervalChanged) {
+          for (const [id, poller] of pcPollers) schedulePCPoller(id, poller);
+        }
+        renderCachedStatuses();
+      }
       async function request(path, options = {}) {
         const r = await fetch(path, { cache: "no-store", ...options });
         let d = {};
@@ -441,6 +651,7 @@
       async function setPCActive(id, active) {
         pendingActive.set(id, active);
         if (!active) cancelPCRequests(id);
+        syncPCPollers();
         if (selected === id && !active) showDashboard();
         renderSelection();
         renderList();
@@ -456,14 +667,28 @@
           $("discoveryStatus").textContent = "Could not save selection: " + e.message;
         } finally {
           pendingActive.delete(id);
+          syncPCPollers();
           renderSelection();
           renderList();
           renderDashboard();
           await refreshNow();
         }
       }
-      async function load() {
-        const next = await request("/api/pcs");
+      function load() {
+        if (listPromise) return listPromise;
+        listPromise = loadPCList().finally(() => { listPromise = null; });
+        return listPromise;
+      }
+      async function loadPCList() {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 4000);
+        let next;
+        try {
+          next = await request("/api/pcs", { signal: controller.signal });
+          if (!Array.isArray(next)) throw new Error("Invalid saved PC list");
+        } finally {
+          clearTimeout(timeout);
+        }
         const layout = (list) =>
           JSON.stringify(list.map((p) => [p.id, p.name, p.address, p.ui_port, p.inactive]));
         const changed = layout(next) !== layout(pcs);
@@ -472,7 +697,6 @@
           if (!isActive(updated) || updated.address !== previous.address) cancelPCRequests(previous.id);
         }
         pcs = next;
-        lastListFetch = Date.now();
         if (selected && !pc()) showDashboard();
         if (changed || !$("dashboardGrid").children.length) {
           renderSelection();
@@ -487,6 +711,7 @@
           const badge = $("seen-" + p.id);
           if (badge) badge.textContent = freshness(p);
         }
+        syncPCPollers();
       }
       function freshness(p) {
         const seen = Date.parse(p.last_seen);
@@ -514,9 +739,10 @@
         $("dashboardGrid").innerHTML = activePCs().length
           ? activePCs().map(cardHTML).join("")
           : '<div class="panel empty">No active PCs. Select PCs above, add a PC, or use Discover.</div>';
+        renderCachedStatuses();
       }
       function timerButtons(id, agent = "") {
-        return ["play", "pause", "reset", "dismiss", "show", "hide"]
+        const desktop = ["play", "pause", "reset", "dismiss", "show", "hide"]
           .map((action) => {
             const route = agent ? agent + "/" + action : action;
             const label =
@@ -524,6 +750,25 @@
             return `<button title="${action} TIME UP / timer" onclick="quick(${argument(id)}, ${argument(route)})">${label}</button>`;
           })
           .join("");
+        const prefix = agent ? agent + "/" : "";
+        return `<span class="desktop-timer-buttons">${desktop}</span><span class="mobile-timer-buttons">
+          <button class="primary mobile-toggle" data-pc="${esc(id)}" data-agent="${esc(agent)}"
+            data-running="false" onclick="toggleTimer(this, ${argument(id)}, ${argument(agent)})">Play</button>
+          <button title="Show TIME UP" aria-label="Show TIME UP" onclick="quick(${argument(id)}, ${argument(prefix + "show")})">S</button>
+          <button title="Hide TIME UP" aria-label="Hide TIME UP" onclick="quick(${argument(id)}, ${argument(prefix + "hide")})">H</button>
+        </span>`;
+      }
+      function updateToggle(id, agent, isRunning) {
+        document.querySelectorAll(".mobile-toggle").forEach((button) => {
+          if (button.dataset.pc === String(id) && button.dataset.agent === String(agent || "")) {
+            button.dataset.running = isRunning ? "true" : "false";
+            button.textContent = isRunning ? "Pause" : "Play";
+          }
+        });
+      }
+      async function toggleTimer(button, id, agent = "") {
+        const action = button.dataset.running === "true" ? "pause" : "play";
+        await quick(id, agent ? agent + "/" + action : action);
       }
       function cardHTML(p) {
         const id = esc(p.id),
@@ -537,7 +782,7 @@
           <div id="seen-${id}" class="hint"></div><div id="da-${id}" class="hint" style="margin-top:8px"></div>
           <div class="compact"><div class="row">
             <input id="cu-${id}" type="time" step="1" title="Run until" oninput="cardUntil(${arg})">
-            <input id="cv-${id}" type="text" inputmode="decimal" value="5" placeholder="10, +10 or -10"
+            <input id="cv-${id}" type="text" inputmode="text" spellcheck="false" autocapitalize="off" value="5" placeholder="10, +10 or -10"
               title="Unsigned sets and starts; + or - adjusts" oninput="cardNumberChanged(${arg})">
             <select id="cf-${id}" title="Unit" onchange="cardUnitChanged(${arg})">
               <option value="3600">H</option><option value="60" selected>M</option><option value="1">S</option>
@@ -560,37 +805,41 @@
         $("pcName").textContent = p.name;
         $("pcAddress").textContent = p.address;
         renderList();
+        renderCachedStatus(p.id, pcPollers.get(p.id), true);
         pollOne(p);
       }
-      async function refresh(forceList = false) {
-        if (refreshPromise) await refreshPromise;
-        refreshPromise = (async () => {
-          try {
-            if (forceList || !lastListFetch || Date.now() - lastListFetch > 15000) await load();
-            if ($("dashboard").hidden && selected) await pollOne(pc());
-            else await pollAll();
-          } catch (e) {
-            $("discoveryStatus").textContent = e.message;
+      function schedulePCPoller(id, poller) {
+        clearInterval(poller.timer);
+        poller.timer = setInterval(() => pollOne(pcs.find(p => p.id === id)), uiSettings.pollIntervalSeconds * 1000);
+      }
+      function syncPCPollers() {
+        for (const [id, poller] of pcPollers) {
+          const target = pcs.find(p => p.id === id);
+          if (!isActive(target) || target.address !== poller.address) {
+            clearInterval(poller.timer);
+            pcPollers.delete(id);
+            cancelPCRequests(id);
           }
-        })();
-        try {
-          await refreshPromise;
-        } finally {
-          refreshPromise = null;
+        }
+        for (const p of activePCs()) {
+          if (pcPollers.has(p.id)) continue;
+          const poller = { address: p.address, promise: null, timer: null, sample: null, failedAt: null };
+          pcPollers.set(p.id, poller);
+          // Each PC has its own clock. Slow requests skip ticks only for that PC.
+          schedulePCPoller(p.id, poller);
+          pollOne(p);
         }
       }
-      async function pollLoop() {
-        await refresh();
-        setTimeout(pollLoop, 2000);
+      async function refreshSavedList() {
+        try { await load(); }
+        catch (e) { $("discoveryStatus").textContent = "Could not refresh saved PCs: " + e.message; }
       }
       async function refreshNow() {
         const button = $("refreshButton");
         if (button) button.disabled = true;
         try {
-          lastListFetch = 0;
-          await load();
-          if ($("dashboard").hidden && selected) await pollOne(pc());
-          else await pollAll();
+          // Start status requests immediately, even if the saved list is slow.
+          await Promise.all([load(), pollAll()]);
           $("discoveryStatus").textContent = "Statuses force-refreshed at " + new Date().toLocaleTimeString();
         } catch (e) {
           $("discoveryStatus").textContent = e.message;
@@ -626,42 +875,78 @@
         return pcRequest(id, "status");
       }
       async function pollAll() {
-        await Promise.all(
-          activePCs().map(async (p) => {
-            try {
-              const t = await status(p.id),
-                te = $("dt-" + p.id),
-                se = $("ds-" + p.id);
-              if (!te) return;
-              te.textContent = fmt(t.remaining_seconds);
-              se.className = "status " + (t.time_up_visible ? "alert" : t.is_running ? "running" : "");
-              se.textContent = statusLabel(t);
-              renderAgentSummary(p.id, t.on_behalf_of || []);
-            } catch (e) {
-              const se = $("ds-" + p.id);
-              if (se) {
-                se.className = "status alert";
-                se.textContent = "Offline";
-              }
-            }
-          }),
-        );
+        await Promise.all(activePCs().map(pollOne));
       }
-      async function pollOne(p) {
+      function pollOne(p) {
         if (!isActive(p)) return;
+        const poller = pcPollers.get(p.id);
+        if (!poller || poller.address !== p.address) return;
+        // Automatic ticks, detail navigation and manual refresh share this request.
+        if (poller.promise) return poller.promise;
+        poller.promise = fetchPCStatus(p, poller).finally(() => { poller.promise = null; });
+        return poller.promise;
+      }
+      async function fetchPCStatus(p, poller) {
+        const isCurrent = () => pcPollers.get(p.id) === poller &&
+          isActive(pcs.find(item => item.id === p.id)) &&
+          pcs.find(item => item.id === p.id).address === p.address;
         try {
           const t = await status(p.id);
-          if (selected !== p.id) return;
-          $("time").textContent = fmt(t.remaining_seconds);
-          $("status").className = "status " + (t.time_up_visible ? "alert" : t.is_running ? "running" : "");
-          $("status").textContent = statusLabel(t);
-          renderAgents(t.on_behalf_of || []);
+          if (!isCurrent()) return;
+          if (!Number.isSafeInteger(t.remaining_seconds) || t.remaining_seconds < 0 || typeof t.is_running !== "boolean") {
+            throw new Error("Invalid timer status");
+          }
+          poller.sample = { status: t, receivedAt: performance.now() };
+          poller.failedAt = null;
+          renderCachedStatus(p.id, poller, true);
         } catch (e) {
-          if (selected !== p.id) return;
-          $("status").className = "status alert";
-          $("status").textContent = "Offline";
-          $("agents").innerHTML = "";
+          if (!isCurrent()) return;
+          if (poller.failedAt === null) poller.failedAt = performance.now();
+          renderCachedStatus(p.id, poller, true);
         }
+      }
+      function displayedStatus(status, elapsed) {
+        // Never modify the authoritative sample or infer TIME UP from an estimate.
+        return { ...status, remaining_seconds: status.is_running
+          ? Math.max(0, status.remaining_seconds - elapsed) : status.remaining_seconds };
+      }
+      function renderCachedStatuses() {
+        for (const [id, poller] of pcPollers) renderCachedStatus(id, poller, true);
+      }
+      function renderCachedStatus(id, poller, full = false) {
+        const p = pcs.find(p => p.id === id);
+        if (!poller || !isActive(p) || p.address !== poller.address) return;
+        const offline = poller.failedAt !== null;
+        const sample = poller.sample;
+        if (!sample && !offline) return;
+        const elapsed = sample && uiSettings.falsePolling
+          ? Math.max(0, Math.floor(((poller.failedAt ?? performance.now()) - sample.receivedAt) / 1000)) : 0;
+        const t = sample ? displayedStatus(sample.status, elapsed) : null;
+        const agents = sample ? (sample.status.on_behalf_of || []).map(a => displayedStatus(a, elapsed)) : [];
+        const text = offline ? "Offline" : statusLabel(t);
+        const className = "status " + (offline || t.time_up_visible ? "alert" : t.is_running ? "running" : "");
+        const time = $("dt-" + id), label = $("ds-" + id);
+        if (time) time.textContent = t ? fmt(t.remaining_seconds) : "--:--:--";
+        if (label) { label.textContent = text; label.className = className; }
+        renderAgentSummary(id, offline ? [] : agents);
+        if (selected === id) {
+          $("time").textContent = t ? fmt(t.remaining_seconds) : "--:--:--";
+          $("status").textContent = text;
+          $("status").className = className;
+          if (full) renderAgents(offline ? [] : agents);
+          else for (const agent of agents) {
+            const value = $("agent-time-" + agent.id);
+            if (value) value.textContent = fmt(agent.remaining_seconds) + " · " + statusLabel(agent);
+          }
+        }
+        if (full && t) {
+          updateToggle(id, "", t.is_running);
+          agents.forEach(a => updateToggle(id, a.id, a.is_running));
+        }
+      }
+      function falsePollingTick() {
+        if (!uiSettings.falsePolling) return;
+        for (const [id, poller] of pcPollers) renderCachedStatus(id, poller);
       }
       function renderAgentSummary(id, agents) {
         const el = $("da-" + id);
@@ -685,7 +970,7 @@
             agents
               .map(
                 (a) => `<div class="row" style="margin-top:7px">
-            <b style="min-width:100px">${esc(a.name)}</b><span>${fmt(a.remaining_seconds)} · ${statusLabel(a)}</span>
+            <b style="min-width:100px">${esc(a.name)}</b><span id="agent-time-${esc(a.id)}">${fmt(a.remaining_seconds)} · ${statusLabel(a)}</span>
             ${timerButtons(selected, a.id)}
             <button onclick="agentValue(${argument(a.id)}, false)">Set</button>
             <button onclick="agentValue(${argument(a.id)}, true)">±</button>
@@ -724,8 +1009,7 @@
       }
       async function quick(id, action) {
         if (await command(id, action)) {
-          if (selected === id) await pollOne(pc());
-          else await pollAll();
+          await pollOne(pcs.find(p => p.id === id));
         }
       }
       async function callSelected(action, body) {
@@ -761,11 +1045,11 @@
           : "Set to " + (raw || "0") + " and start";
       }
       function cardUnitChanged(id) {
-        if ($("cu-" + id).value) cardUntil(id);
+        if (!window.matchMedia("(max-width: 720px)").matches && $("cu-" + id).value) cardUntil(id);
         else cardNumberChanged(id);
       }
       async function cardSubmit(id) {
-        const timeValue = $("cu-" + id).value;
+        const timeValue = window.matchMedia("(max-width: 720px)").matches ? "" : $("cu-" + id).value;
         if (timeValue) {
           const info = untilInfo(timeValue);
           if (info && (await command(id, "set", { seconds: info.seconds }))) await command(id, "play");
@@ -868,7 +1152,10 @@
           button.disabled = false;
         }
       }
-      pollLoop();
+      restoreSettings();
+      refreshSavedList();
+      setInterval(refreshSavedList, 15000);
+      setInterval(falsePollingTick, 1000);
     </script>
   </body>
 </html>
