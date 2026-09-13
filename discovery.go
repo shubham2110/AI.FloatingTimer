@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -18,10 +19,49 @@ import (
 )
 
 type NodeIdentity struct {
-	Service   string `json:"service"`
-	Name      string `json:"name"`
-	TimerPort int    `json:"timer_port"`
-	UIPort    int    `json:"ui_port"`
+	Service   string          `json:"service"`
+	Name      string          `json:"name"`
+	TimerPort int             `json:"timer_port"`
+	UIPort    int             `json:"ui_port"`
+	Timers    []TimerIdentity `json:"timers,omitempty"`
+}
+
+type TimerIdentity struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
+
+func localNodeIdentity() NodeIdentity {
+	identity := NodeIdentity{Service: "overlay-timer", Name: configuredFriendlyName(), TimerPort: appConfig.TimerPort, UIPort: appConfig.UIDiscoveryPort}
+	identity.Timers = []TimerIdentity{{ID: "", Name: identity.Name, Path: ""}}
+	for _, timer := range virtualTimerList() {
+		identity.Timers = append(identity.Timers, TimerIdentity{ID: timer.Config.ID, Name: timer.Config.Name, Path: "/" + timer.Config.ID})
+	}
+	return identity
+}
+
+// The complete timer URL is the registry key, including a virtual timer's ID.
+// Legacy identities without a manifest still describe the host's own timer.
+func identityPCs(address string, identity NodeIdentity) []PC {
+	pcs := []PC{{ID: stablePCID(address), Name: identity.Name, Address: address, UIPort: identity.UIPort}}
+	seen := map[string]bool{"": true}
+	for _, timer := range identity.Timers {
+		if timer.ID == "" && timer.Path == "" && timer.Name != "" {
+			pcs[0].Name = timer.Name
+		}
+		if seen[timer.ID] || !isNumericID(timer.ID) || timer.Path != "/"+timer.ID {
+			continue
+		}
+		seen[timer.ID] = true
+		name := timer.Name
+		if strings.TrimSpace(name) == "" {
+			name = "Agent " + timer.ID
+		}
+		timerAddress := address + timer.Path
+		pcs = append(pcs, PC{ID: stablePCID(timerAddress), Name: name, Address: timerAddress, UIPort: identity.UIPort})
+	}
+	return pcs
 }
 
 type DiscoveryResult struct {
@@ -30,6 +70,7 @@ type DiscoveryResult struct {
 	LeaderIP   string    `json:"leader_ip"`
 	Scanned    int       `json:"scanned"`
 	Found      int       `json:"found"`
+	HostsFound int       `json:"hosts_found"`
 	Error      string    `json:"error,omitempty"`
 }
 
@@ -74,6 +115,12 @@ func localRegistryPC() PC {
 	return PC{ID: stablePCID(address), Name: configuredFriendlyName(), Address: address, UIPort: appConfig.UIDiscoveryPort}
 }
 
+func observeLocalTimers() {
+	for _, pc := range identityPCs(localRegistryPC().Address, localNodeIdentity()) {
+		observePC(pc)
+	}
+}
+
 // A direct probe supplies liveness, never a new metadata revision.
 func observePC(pc PC) {
 	pc.LastSeen = time.Now().UTC()
@@ -88,7 +135,7 @@ func registerDiscoveryHandlers(mux *http.ServeMux) {
 			writeJSON(w, 405, map[string]string{"error": "GET required"})
 			return
 		}
-		writeJSON(w, 200, NodeIdentity{Service: "overlay-timer", Name: configuredFriendlyName(), TimerPort: appConfig.TimerPort, UIPort: appConfig.UIDiscoveryPort})
+		writeJSON(w, 200, localNodeIdentity())
 	})
 	mux.HandleFunc("/api/discovery/status", func(w http.ResponseWriter, r *http.Request) {
 		discoveryState.Lock()
@@ -150,7 +197,7 @@ func startDiscoveryScheduler() {
 }
 
 func periodicDiscovery() {
-	observePC(localRegistryPC())
+	observeLocalTimers()
 	leader := discoveryLeaderIP()
 	own := localIPv4s()
 	if len(own) > 0 && leader == own[0].String() {
@@ -288,15 +335,15 @@ func performDiscovery(manual bool) {
 	result.Scanned = len(hosts)
 	workers := appConfig.Discovery.MaximumConcurrency
 	jobs := make(chan string)
-	found := make(chan PC, len(hosts))
+	found := make(chan []PC, len(hosts))
 	var wg sync.WaitGroup
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for host := range jobs {
-				if pc, ok := probeTimer(host); ok {
-					found <- pc
+				if pcs, ok := probeTimer(host); ok {
+					found <- pcs
 				}
 			}
 		}()
@@ -309,32 +356,35 @@ func performDiscovery(manual bool) {
 		wg.Wait()
 		close(found)
 	}()
-	for pc := range found {
-		result.Found++
-		observePC(pc)
-		pullPeersFromPC(pc)
+	for pcs := range found {
+		result.HostsFound++
+		result.Found += len(pcs)
+		for _, pc := range pcs {
+			observePC(pc)
+		}
+		pullPeersFromPC(pcs[0])
 	}
-	logf("discovery", "complete manual=%v scanned=%d found=%d", manual, result.Scanned, result.Found)
+	logf("discovery", "complete manual=%v scanned=%d hosts=%d timers=%d", manual, result.Scanned, result.HostsFound, result.Found)
 }
 
-func probeTimer(host string) (PC, bool) {
+func probeTimer(host string) ([]PC, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(appConfig.Discovery.ConnectTimeoutMilliseconds)*time.Millisecond)
 	defer cancel()
 	address := fmt.Sprintf("http://%s:%d", host, appConfig.TimerPort)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, address+"/identity", nil)
 	response, err := timerHTTP.Do(req)
 	if err != nil {
-		return PC{}, false
+		return nil, false
 	}
 	defer response.Body.Close()
 	var identity NodeIdentity
-	if response.StatusCode != 200 || json.NewDecoder(response.Body).Decode(&identity) != nil || identity.Service != "overlay-timer" {
-		return PC{}, false
+	if response.StatusCode != 200 || json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&identity) != nil || identity.Service != "overlay-timer" || identity.TimerPort < 0 || identity.TimerPort > 65535 || identity.UIPort < 0 || identity.UIPort > 65535 {
+		return nil, false
 	}
 	if identity.TimerPort > 0 {
 		address = fmt.Sprintf("http://%s:%d", host, identity.TimerPort)
 	}
-	return PC{ID: stablePCID(address), Name: identity.Name, Address: address, UIPort: identity.UIPort}, true
+	return identityPCs(address, identity), true
 }
 
 func pullPeers(host string) {
@@ -368,27 +418,41 @@ func pullPeersURL(endpoint string) {
 	}
 }
 
-// Resolve saved inactive hostnames once per scan, so their IPs are skipped too.
+// A disabled virtual timer never blocks its host. A disabled root timer only
+// blocks scanning when no active sibling needs that host. Resolve aliases once.
 func blockedDiscoveryHosts() map[string]bool {
 	blocked := map[string]bool{}
+	active := map[string]bool{}
+	resolved := map[string][]string{}
 	for _, pc := range store.snapshot() {
-		if !pc.Inactive && !pc.Deleted {
-			continue
-		}
 		u, err := url.Parse(pc.Address)
 		if err != nil {
 			continue
 		}
 		host := u.Hostname()
-		blocked[host] = true
-		if net.ParseIP(host) == nil {
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			addresses, _ := net.DefaultResolver.LookupIPAddr(ctx, host)
-			cancel()
-			for _, address := range addresses {
-				blocked[address.IP.String()] = true
+		keys, ok := resolved[host]
+		if !ok {
+			keys = []string{host}
+			if net.ParseIP(host) == nil {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				addresses, _ := net.DefaultResolver.LookupIPAddr(ctx, host)
+				cancel()
+				for _, address := range addresses {
+					keys = append(keys, address.IP.String())
+				}
+			}
+			resolved[host] = keys
+		}
+		for _, key := range keys {
+			if !pc.Inactive && !pc.Deleted {
+				active[key] = true
+			} else if u.Path == "" || u.Path == "/" {
+				blocked[key] = true
 			}
 		}
+	}
+	for host := range active {
+		delete(blocked, host)
 	}
 	return blocked
 }

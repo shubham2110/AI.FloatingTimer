@@ -706,7 +706,7 @@ func startBackgroundAPI(listener net.Listener) {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"message": "GET required"})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{"service": "overlay-timer", "name": configuredFriendlyName(), "timer_port": appConfig.TimerPort, "ui_port": appConfig.UIDiscoveryPort})
+		writeJSON(w, http.StatusOK, localNodeIdentity())
 	})
 	registerTimerCommands(http.DefaultServeMux, "", applyLocalAction)
 	registerOnBehalfHandlers(http.DefaultServeMux)

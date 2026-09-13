@@ -63,9 +63,12 @@ func distributeHandler(w http.ResponseWriter, r *http.Request) {
 // Distribution is explicit, bounded, and never forwards recursively on receipt.
 func distributePeers(ctx context.Context, peers []PC) []DistributionResult {
 	destinations := []PC{}
+	seen := map[string]bool{}
 	for _, pc := range peers {
-		if !isLocalPeer(pc) {
+		endpoint := peerEndpoint(pc)
+		if !isLocalPeer(pc) && !seen[endpoint] {
 			destinations = append(destinations, pc)
+			seen[endpoint] = true
 		}
 	}
 	results := make([]DistributionResult, len(destinations))

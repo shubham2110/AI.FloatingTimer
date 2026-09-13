@@ -44,7 +44,7 @@ func startManagementService(listener net.Listener) {
 		log.Printf("could not load PC list: %v", err)
 		return
 	}
-	observePC(localRegistryPC())
+	observeLocalTimers()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", servePage)
 	mux.HandleFunc("/api/pcs", pcsHandler)
@@ -104,8 +104,12 @@ func normalizeAddress(value string) (string, error) {
 	if err != nil || u.Scheme != "http" || u.Hostname() == "" {
 		return "", errors.New("enter a hostname or IP address")
 	}
-	if u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
-		return "", errors.New("address cannot include credentials or a path")
+	if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawPath != "" {
+		return "", errors.New("address cannot include credentials, query parameters, fragments, or escaped paths")
+	}
+	path := strings.TrimSuffix(u.Path, "/")
+	if path != "" && !isNumericID(strings.TrimPrefix(path, "/")) {
+		return "", errors.New("address path must be a numeric on-behalf timer ID, such as /1")
 	}
 	port := appConfig.TimerPort
 	if u.Port() != "" {
@@ -114,7 +118,7 @@ func normalizeAddress(value string) (string, error) {
 			return "", errors.New("timer port must be between 1 and 65535")
 		}
 	}
-	return "http://" + net.JoinHostPort(strings.ToLower(u.Hostname()), strconv.Itoa(port)), nil
+	return "http://" + net.JoinHostPort(strings.ToLower(u.Hostname()), strconv.Itoa(port)) + path, nil
 }
 
 func headers(next http.Handler) http.Handler {

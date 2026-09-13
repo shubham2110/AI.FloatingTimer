@@ -402,16 +402,20 @@ await fetch("/dismiss", { method: "POST" });
 
 ## Operator UI and multiple machines
 
-The frontend loads `GET /api/pcs` from its own manager, then uses each active PC's
-`address` as the base URL. Status, set/play/pause, overlay controls, and numeric on-behalf
-routes go directly to the timer host. The former `/api/pcs/{id}/{action}` proxy routes
-have been removed. Local timer command activity is logged on the timer host.
+The frontend loads `GET /api/pcs` from its own manager. Commands use each active
+system's `address` as the base URL, including its numeric on-behalf path when present.
+Status uses one root `/status` request per host and updates all its active systems.
+Requests go directly to the timer host. The former `/api/pcs/{id}/{action}` proxy
+routes have been removed. Local timer command activity is logged on the timer host.
 
 ```javascript
 const pcs = await (await fetch('/api/pcs')).json();
 const activePC = pcs.find(pc => !pc.inactive);
 if (activePC) {
-  const status = await (await fetch(activePC.address + '/status')).json();
+  const timerID = activePC.address.match(/\/(\d+)$/)?.[1] || '';
+  const host = activePC.address.replace(/\/\d+$/, '');
+  const all = await (await fetch(host + '/status')).json();
+  const status = timerID ? all.on_behalf_of?.find(t => t.id === timerID) : all;
   await fetch(activePC.address + '/set', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({seconds: 300})
@@ -448,7 +452,7 @@ malformed Windows executable headers with Go 1.25 and older MinGW/CGO toolchains
 
 | Route | Behavior |
 |---|---|
-| `GET /identity` | Application identity, friendly name, timer port, and UI port. |
+| `GET /identity` | Application identity, friendly name, ports, and a `timers` list containing the local and all on-behalf timers. |
 | `POST /show` | Display TIME UP without changing time or running state. |
 | `POST /hide` | Hide TIME UP; `/dismiss` remains an alias. |
 | `GET /status` | Existing local fields plus `name` and an `on_behalf_of` array. |
@@ -459,6 +463,11 @@ Other numeric IDs work the same way. Each on-behalf status includes `id` and `na
 the standard timer fields. External commands come only from local configuration and
 remain asynchronous. Command ordering is not guaranteed. Each timer's activity CSV is
 stored in its numeric subdirectory, with the same columns as the primary activity CSV.
+
+See [the identity manifest contract](API.md#identity-manifest) for the advertised timer
+list and compatibility behavior. Update hosts and managers, reload the browser, and
+run Discover to register separate on-behalf system cards. Older hosts without the
+manifest still produce their own root entry; there is no extra status discovery probe.
 
 ## Set up on-behalf timers
 
@@ -617,12 +626,14 @@ Invoke-RestMethod -Method Post -Uri 'http://192.168.1.20:18081/hide' -TimeoutSec
 Showing TIME UP also minimizes windows on PC B; hiding it restores them. A forced
 `/show` does not invoke PC B's configured app-closing behavior.
 
-Open `http://192.168.1.10:18082` in your browser. Add/select **PC A** using its
-timer address `http://192.168.1.10:18081`, then open **Details**. The
-**On-behalf agents** section contains `PC B`. Use its **Set** button to enter a
-duration in **seconds**, then its **Play** button. Its **±** button also takes
-seconds. On mobile the agent's Play/Pause control is a toggle. The main controls
-above this section still operate PC A's own timer.
+Open `http://192.168.1.10:18082` in your browser and click **Discover**. PC A and
+its on-behalf timer **PC B** appear as separate systems, each with its own card,
+selection checkbox, and controls. PC B's card uses `http://192.168.1.10:18081/1`;
+you can also use **Add system** with that address. Open its **Details** to set a
+duration or adjust remaining time. On mobile its Play/Pause control is a toggle.
+PC A's card operates PC A's own timer. Both cards share a single request to
+PC A's `/status`; no separate `/1/status` polling is needed. Overlay positioning
+and drag controls apply only to the host's own timer and are hidden for PC B.
 
 You can also control PC B's on-behalf countdown through **PC A's** API:
 
@@ -674,12 +685,13 @@ in the manager nor automatic discovery creates `on_behalf_of` entries.
 
 | Problem | What to check |
 |---|---|
-| No On-behalf agents section, or `/1/status` returns 404 | Edit the config beside the running PC A executable, use a unique numeric string ID, and restart PC A's app. |
+| No separate card for timer 1 | Update the host and manager executables, restart them, reload the browser, and run Discover. Check that PC A's `/identity` lists `/1` in `timers` and that the system is checked under Select active systems. A removed record must be explicitly added again. |
+| `/1/status` returns 404 | Edit the config beside the running PC A executable, use a unique numeric string ID, and restart PC A's app. |
 | Configuration seems ignored | Check JSON syntax (no comments or trailing commas). Invalid JSON causes default settings to be used; startup errors are in `overlay_timer-YYYY-MM-DD.log`. |
 | Countdown works but PC B shows no alert | First run the direct `/identity` and `/show` checks from PC A. Check the address, timer port, firewall, PC B's app/session, and the hook log. |
 | Command fails or times out | Inspect `1/overlay_ui_activity.csv` beside PC A's executable. The hook result records output/errors or `command timed out`; timer `2` uses `2/overlay_ui_activity.csv`. |
 | PC A's timer changes instead of PC B's virtual timer | Use the agent's controls or PC A's `/1/...` routes, not PC A's unprefixed routes. |
-| PC B's displayed countdown differs | Expected: this setup sends show/hide only. View the authoritative countdown under PC A's On-behalf agents section. |
+| PC B's displayed countdown differs | Expected: this setup sends show/hide only. View the authoritative countdown on the system card whose address ends in PC A's `/1`. |
 
 ### Management and registry behavior
 
@@ -688,13 +700,18 @@ in the manager nor automatic discovery creates `on_behalf_of` entries.
   `name`, `address`, and optional `ui_port`; omission preserves the existing UI port.
 - `PUT /api/pcs/{id}/active` with `{"active": false}` disables a PC. New and legacy PCs
   are active by default. Selection persists beside the executable in `overlay_ui_pcs.json`.
-- Inactive PCs only appear in **Select active PCs**, not in the dashboard or detail list.
-  They are not polled, commanded, probed by discovery, or included in distribution.
-  Disabling cancels pending browser requests; commands already delivered cannot be undone.
-- Each active PC has an independent status schedule (default **5 seconds**), including while a
-  PC's detail view is open. If its previous request is still pending, only that PC
-  skips the tick; status requests time out after four seconds. Slow/offline PCs do
-  not delay other PCs. Browser throttling in background tabs can slow timers.
+- Inactive systems only appear in **Select active systems**, not in the dashboard or
+  detail list, and cannot be commanded or distributed. Disabling cancels pending commands;
+  commands already delivered cannot be undone. A host's shared status request continues
+  while any of its timers is active, even if its own timer is unchecked. Discovery skips
+  disabled/deleted root hosts unless an active sibling needs them; disabling an on-behalf
+  timer never blocks discovery of its host. Rediscovery preserves per-timer selection.
+- Each host with active timers has one independent status schedule (default **5 seconds**),
+  including while a detail view is open. One root `/status` response updates the host's
+  own card and matches on-behalf cards by ID in `on_behalf_of`. No `/1/status` requests
+  are sent by the manager. A missing/invalid agent is marked **Unavailable**. If the
+  previous request is pending, only that host skips the tick; requests time out after
+  four seconds. Slow/offline hosts do not delay others. Background tabs can slow timers.
 - Open **Settings** in the header to choose a polling interval of **1–300 whole
   seconds**. It applies to every active PC in this browser. Saving changes updates
   existing schedules immediately without duplicating pending requests. The settings
@@ -711,13 +728,18 @@ in the manager nor automatic discovery creates `on_behalf_of` entries.
 - The saved list refreshes separately every 15 seconds with a four-second timeout.
   Failed list refreshes preserve the existing PCs and their status schedules.
   **Refresh** starts list and status refreshes together; pending requests are reused.
-  Removing, disabling, or changing a PC's address cancels its old requests and schedule.
+  Removing, disabling, or changing a system cancels its old command requests. The old
+  host's status request and schedule stop once it has no active systems left.
 - **Discover** calls `POST /api/discovery/run`; progress is read with
-  `GET /api/discovery/status`. Discover saves URLs locally without distributing them.
+  `GET /api/discovery/status`. It reads `/identity` once per responding host and saves
+  a separate URL for every advertised timer, without probing `/status` or distributing
+  the list. Results include `hosts_found` and `found` (timers). Local timers are also
+  registered at startup, even when automatic discovery is disabled.
 - **Distribute** calls `POST /api/discovery/distribute` with `{"ids":["selected-pc-id"]}`.
   The manager sends only those active records to the selected active machines' configured
-  UI/discovery ports. Results report successes and per-destination errors. No request is
-  made to inactive destinations. Receiving records never triggers another distribution.
+  UI/discovery ports, once per host even when several selected timers belong to it.
+  Results report host successes and per-destination errors. Hosts with no selected
+  active timers receive no request. Receiving records never triggers another distribution.
 - `GET/POST /api/discovery/peers` exports active records or imports received records.
   Peer imports preserve this manager's selection; remote inactive flags are never imported.
 
@@ -726,10 +748,11 @@ it explicitly with `discovery.enabled: true`; `interval_seconds` defaults to 300
 enabled, the existing lowest-reachable-IP leader logic is used. Distribution remains
 an explicit button action even when automatic discovery is enabled.
 
-Addresses are normalized registry keys. IDs remain stable locally, duplicate addresses
+Addresses (including an optional numeric timer path such as `/1`) are normalized registry
+keys. Timer 1 on two different hosts has different registry IDs. IDs remain stable locally, duplicate addresses
 return HTTP 409, and metadata uses newest-edit-wins with a deterministic tie break.
 Local deletion tombstones prevent old peer records from restoring removed addresses;
-explicit Add PC can restore an address. Inactive selection is separate from shared
+explicit Add system can restore an address. Inactive selection is separate from shared
 metadata and survives edits, imports, and restarts. Failed saves roll back memory.
 
 Discovery still probes the configured timer port; differently configured remote timer

@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync('ui.html', 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1];
 const sample = (name, inactive = false) => ({ id: name, name, address: `http://${name}:18081`, inactive });
+const agent = (host, id, inactive = false) => ({ id: `${host}-${id}`, name: `Agent ${id}`, address: `http://${host}:18081/${id}`, inactive });
 const status = { remaining_seconds: 300, is_running: true, time_up_visible: false, on_behalf_of: [] };
 const flush = async () => { for (let i = 0; i < 25; i++) await Promise.resolve(); };
 
@@ -21,7 +22,7 @@ function harness(initial, settings = { pollIntervalSeconds: 1, falsePolling: fal
   };
   const storage = new Map();
   if (settings !== null) storage.set('overlay-timer-ui-settings-v1', JSON.stringify(settings));
-  const state = { list: initial, stallList: false, slow: new Set(), responses: new Map(), calls, node, storage };
+  const state = { list: initial, stallList: false, slow: new Set(), responses: new Map(), calls, node, storage, toggles: [] };
   function schedule(fn, delay, interval = 0) {
     const id = ++serial;
     timers.set(id, { fn, at: now + delay, interval });
@@ -31,11 +32,11 @@ function harness(initial, settings = { pollIntervalSeconds: 1, falsePolling: fal
     console, AbortController,
     performance: { now: () => now },
     localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
-    document: { getElementById: node, querySelectorAll: () => [] },
+    document: { getElementById: node, querySelectorAll: selector => selector === '.mobile-toggle' ? state.toggles : [] },
     setTimeout: (fn, delay) => schedule(fn, delay), clearTimeout: id => timers.delete(id),
     setInterval: (fn, delay) => schedule(fn, delay, delay), clearInterval: id => timers.delete(id),
     fetch(url, options = {}) {
-      const call = { url, at: now, pending: true, aborted: false };
+      const call = { url, options, at: now, pending: true, aborted: false };
       calls.push(call);
       return new Promise((resolve, reject) => {
         call.resolve = data => {
@@ -164,7 +165,7 @@ test('settings apply to all schedules, preserve pending requests, and survive re
 });
 
 test('false polling interpolates running timers and agents, preserves paused timers, and resyncs', async () => {
-  const h = harness([sample('pc')], { pollIntervalSeconds: 5, falsePolling: true });
+  const h = harness([sample('pc'), agent('pc', '1'), agent('pc', '2')], { pollIntervalSeconds: 5, falsePolling: true });
   h.responses.set('http://pc:18081/status', { ...status, remaining_seconds: 2135, on_behalf_of: [
     { ...status, id: '1', name: 'Running agent', remaining_seconds: 20 },
     { ...status, id: '2', name: 'Paused agent', remaining_seconds: 40, is_running: false },
@@ -175,8 +176,10 @@ test('false polling interpolates running timers and agents, preserves paused tim
   await h.advance(2000);
   assert.equal(h.node('dt-pc').textContent, '00:35:33');
   assert.equal(h.node('time').textContent, '00:35:33');
-  assert.equal(h.node('agent-time-1').textContent, '00:00:18 · Running');
-  assert.equal(h.node('agent-time-2').textContent, '00:00:40 · Paused');
+  assert.equal(h.node('dt-pc-1').textContent, '00:00:18');
+  assert.equal(h.node('ds-pc-1').textContent, 'Running');
+  assert.equal(h.node('dt-pc-2').textContent, '00:00:40');
+  assert.equal(h.node('ds-pc-2').textContent, 'Paused');
   const calls = h.calls.length;
   h.run('falsePollingTick(); falsePollingTick();');
   assert.equal(h.calls.length, calls, 'local display ticks must not send requests');
@@ -184,6 +187,107 @@ test('false polling interpolates running timers and agents, preserves paused tim
   await h.advance(4000);
   assert.equal(h.node('dt-pc').textContent, '00:01:30');
   assert.equal(h.node('ds-pc').textContent, 'Paused');
+  assert.equal(h.node('ds-pc-1').textContent, 'Unavailable');
+  assert.equal(h.node('dt-pc-1').textContent, '--:--:--');
+});
+
+test('discovered systems have separate cards and controls but one status request per host', async () => {
+  const h = harness([sample('pc4'), agent('pc4', '1'), agent('pc4', '20'), sample('pc5'), agent('pc5', '1')]);
+  h.responses.set('http://pc4:18081/status', { ...status, on_behalf_of: [
+    { ...status, id: '20', remaining_seconds: 20 },
+    { ...status, id: '1', remaining_seconds: 91, is_running: false },
+  ] });
+  h.responses.set('http://pc5:18081/status', { ...status, on_behalf_of: [
+    { ...status, id: '1', remaining_seconds: 45 },
+  ] });
+  h.start();
+  await h.advance(0);
+  assert.equal(h.node('activeCount').textContent, '(5/5)');
+  assert.equal((h.node('dashboardGrid').innerHTML.match(/<article /g) || []).length, 5);
+  assert.equal(h.node('dt-pc4-1').textContent, '00:01:31');
+  assert.equal(h.node('dt-pc5-1').textContent, '00:00:45');
+  assert.equal(h.node('dt-pc4-20').textContent, '00:00:20');
+  assert.equal(h.calls.filter(c => c.url.endsWith('/status')).length, 2);
+  h.run('showDetail("pc4-1")');
+  await flush();
+  assert.equal(h.node('time').textContent, '00:01:31');
+  assert.equal(h.node('overlayControls').hidden, true);
+  await h.run('quick("pc4-1", "play")');
+  await h.run('callSelected("set", {seconds: 120})');
+  const play = h.calls.find(c => c.url === 'http://pc4:18081/1/play');
+  const set = h.calls.find(c => c.url === 'http://pc4:18081/1/set');
+  assert.equal(play.options.method, 'POST');
+  assert.deepEqual(JSON.parse(set.options.body), { seconds: 120 });
+  assert.ok(!h.calls.some(c => /\/\d+\/status$/.test(c.url)));
+  h.run('showDetail("pc4")');
+  assert.equal(h.node('overlayControls').hidden, false);
+});
+
+test('shared status polling continues for an active agent with its own timer unchecked', async () => {
+  const h = harness([sample('pc', true), agent('pc', '1')]);
+  h.responses.set('http://pc:18081/status', { ...status, on_behalf_of: [{ ...status, id: '1', remaining_seconds: 17 }] });
+  h.start();
+  await h.advance(2000);
+  assert.equal(h.node('dt-pc-1').textContent, '00:00:17');
+  assert.deepEqual(h.calls.filter(c => c.url.endsWith('/status')).map(c => c.url), Array(3).fill('http://pc:18081/status'));
+  const before = h.calls.length;
+  assert.equal(await h.run('command("pc", "play")'), false);
+  assert.equal(h.calls.length, before);
+});
+
+test('mobile toggles use each system status and route actions to its timer URL', async () => {
+  const h = harness([sample('pc'), agent('pc', '1')]);
+  h.toggles.push({ dataset: { pc: 'pc', running: 'false' } }, { dataset: { pc: 'pc-1', running: 'false' } });
+  h.responses.set('http://pc:18081/status', { ...status, on_behalf_of: [{ ...status, id: '1', is_running: false }] });
+  h.start();
+  await h.advance(0);
+  assert.equal(h.toggles[0].textContent, 'Pause');
+  assert.equal(h.toggles[1].textContent, 'Play');
+  await h.run('toggleTimer(document.querySelectorAll(".mobile-toggle")[1], "pc-1")');
+  assert.ok(h.calls.some(c => c.url === 'http://pc:18081/1/play' && c.options.method === 'POST'));
+  h.responses.set('http://pc:18081/status', { ...status, on_behalf_of: [{ ...status, id: '1' }] });
+  await h.advance(1000);
+  assert.equal(h.toggles[1].textContent, 'Pause');
+  await h.run('toggleTimer(document.querySelectorAll(".mobile-toggle")[1], "pc-1")');
+  assert.ok(h.calls.some(c => c.url === 'http://pc:18081/1/pause' && c.options.method === 'POST'));
+  assert.ok(!h.calls.some(c => /\/\d+\/status$/.test(c.url)));
+});
+
+test('removing one sibling retains a pending shared poll; removing the last cancels it', async () => {
+  const h = harness([sample('pc'), agent('pc', '1')]);
+  h.slow.add('http://pc:18081/status');
+  h.start();
+  await h.advance(0);
+  const pending = h.calls.find(c => c.url.endsWith('/status'));
+  h.list = [agent('pc', '1')];
+  await h.run('load()');
+  assert.equal(pending.aborted, false);
+  h.run('pollAll(); showDetail("pc-1"); refreshNow();');
+  await h.advance(1000);
+  assert.equal(h.calls.filter(c => c.url.endsWith('/status')).length, 1);
+  h.list = [];
+  await h.run('load()');
+  assert.equal(pending.aborted, true);
+  await h.advance(4000);
+  assert.equal(h.calls.filter(c => c.url.endsWith('/status')).length, 1);
+});
+
+test('adding an agent to a known host reuses its sample and missing agents do not borrow the local countdown', async () => {
+  const h = harness([sample('pc')]);
+  h.responses.set('http://pc:18081/status', { ...status, on_behalf_of: [{ ...status, id: '1', remaining_seconds: 70 }] });
+  h.start();
+  await h.advance(0);
+  h.list.push(agent('pc', '1'), agent('pc', '2'));
+  await h.run('load()');
+  assert.equal(h.node('dt-pc-1').textContent, '00:01:10');
+  assert.equal(h.node('ds-pc-2').textContent, 'Unavailable');
+  assert.equal(h.node('dt-pc-2').textContent, '--:--:--');
+  assert.equal(h.calls.filter(c => c.url.endsWith('/status')).length, 1);
+  h.responses.set('http://pc:18081/status', { ...status, on_behalf_of: [{ ...status, id: '1', remaining_seconds: -1 }, { ...status, id: '2' }] });
+  await h.advance(1000);
+  assert.equal(h.node('ds-pc').textContent, 'Running');
+  assert.equal(h.node('ds-pc-1').textContent, 'Unavailable');
+  assert.equal(h.node('ds-pc-2').textContent, 'Running');
 });
 
 test('false polling clamps at zero without inventing TIME UP and disabling restores the real sample', async () => {

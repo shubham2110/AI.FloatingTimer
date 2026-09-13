@@ -385,7 +385,7 @@
     <header>
       <h1>Overlay Timer Manager</h1>
       <div class="header-actions">
-        <button onclick="openPC()">Add PC</button>
+        <button onclick="openPC()">Add system</button>
         <button id="discoverButton" class="primary" onclick="discoverNow()">Discover</button>
         <button id="distributeButton" onclick="distributeNow()">Distribute</button>
         <button id="refreshButton" class="primary" onclick="refreshNow()">⚡ Force Refresh</button>
@@ -396,16 +396,16 @@
     <div class="wrap">
       <details class="panel" style="margin-bottom: 16px">
         <summary>
-          Select active PCs
+          Select active systems
           <span id="activeCount"></span>
         </summary>
-        <p class="hint">Only checked PCs appear below, receive requests, and are shared by Distribute.</p>
+        <p class="hint">Only checked systems appear below and are shared by Distribute. Timers on the same host share one status request.</p>
         <div id="activePCs" class="list"></div>
       </details>
       <section id="dashboard">
         <div class="top">
           <div>
-            <h2>All PCs</h2>
+            <h2>All systems</h2>
             <div id="discoveryStatus" class="hint">Live status and quick controls</div>
           </div>
         </div>
@@ -415,7 +415,7 @@
         <button onclick="showDashboard()">← Dashboard</button>
         <div class="layout" style="margin-top: 12px">
           <aside class="panel">
-            <b>PCs</b>
+            <b>Systems</b>
             <div id="pcs" class="list"></div>
           </aside>
           <main class="panel">
@@ -439,7 +439,6 @@
               <button title="Show TIME UP" onclick="callSelected('show')">Show</button>
               <button title="Hide TIME UP" onclick="callSelected('hide')">Hide</button>
             </div>
-            <div id="agents"></div>
             <div class="detail-grid">
               <div class="detail-card">
                 <h3>Set duration</h3>
@@ -470,7 +469,7 @@
                   <button onclick="detailAdjust()">Apply</button>
                 </div>
               </div>
-              <div class="detail-card">
+              <div id="overlayControls" class="detail-card">
                 <h3>Overlay</h3>
                 <div class="row">
                   <input id="detailX" type="number" min="0" value="10" placeholder="X" />
@@ -497,7 +496,7 @@
         <input id="name" required style="width: 100%" placeholder="Gaming PC 1" />
         <label for="address">IP address or hostname</label>
         <input id="address" required style="width: 100%" placeholder="192.168.1.50" />
-        <p class="hint">Port 18081 is added automatically if omitted.</p>
+        <p class="hint">Port 18081 is added automatically if omitted. For an on-behalf timer, append its ID, for example 192.168.1.50:18081/1.</p>
         <label for="uiPort">UI / discovery port</label>
         <input id="uiPort" type="number" min="1" max="65535" placeholder="Default" style="width: 100%" />
         <div class="row" style="justify-content: flex-end; margin-top: 18px">
@@ -530,7 +529,7 @@
         selected = null;
       const pendingActive = new Map(),
         pendingRequests = new Map(),
-        pcPollers = new Map();
+        hostPollers = new Map();
       let listPromise = null;
       const $ = (id) => document.getElementById(id);
       const SETTINGS_KEY = "overlay-timer-ui-settings-v1";
@@ -570,7 +569,7 @@
         const intervalChanged = settings.pollIntervalSeconds !== uiSettings.pollIntervalSeconds;
         uiSettings = settings;
         if (intervalChanged) {
-          for (const [id, poller] of pcPollers) schedulePCPoller(id, poller);
+          for (const [address, poller] of hostPollers) scheduleHostPoller(address, poller);
         }
         renderCachedStatuses();
       }
@@ -610,6 +609,15 @@
       }
       function pc() {
         return activePCs().find((x) => x.id === selected);
+      }
+      function timerID(p) {
+        return p.address.replace(/\/$/, "").match(/\/(\d+)$/)?.[1] || "";
+      }
+      function hostAddress(p) {
+        return p.address.replace(/\/$/, "").replace(/\/\d+$/, "");
+      }
+      function hostSystems(address) {
+        return activePCs().filter(p => hostAddress(p) === address);
       }
       function cancelPCRequests(id) {
         for (const controller of pendingRequests.get(id) || []) controller.abort();
@@ -733,53 +741,51 @@
           </button>`,
               )
               .join("")
-          : '<div class="hint">No PCs added.</div>';
+          : '<div class="hint">No systems added.</div>';
       }
       function renderDashboard() {
         $("dashboardGrid").innerHTML = activePCs().length
           ? activePCs().map(cardHTML).join("")
-          : '<div class="panel empty">No active PCs. Select PCs above, add a PC, or use Discover.</div>';
+          : '<div class="panel empty">No active systems. Select systems above, add a system, or use Discover.</div>';
         renderCachedStatuses();
       }
-      function timerButtons(id, agent = "") {
+      function timerButtons(id) {
         const desktop = ["play", "pause", "reset", "dismiss", "show", "hide"]
           .map((action) => {
-            const route = agent ? agent + "/" + action : action;
             const label =
               action === "show" ? "S" : action === "hide" ? "H" : action[0].toUpperCase() + action.slice(1);
-            return `<button title="${action} TIME UP / timer" onclick="quick(${argument(id)}, ${argument(route)})">${label}</button>`;
+            return `<button title="${action} TIME UP / timer" onclick="quick(${argument(id)}, ${argument(action)})">${label}</button>`;
           })
           .join("");
-        const prefix = agent ? agent + "/" : "";
         return `<span class="desktop-timer-buttons">${desktop}</span><span class="mobile-timer-buttons">
-          <button class="primary mobile-toggle" data-pc="${esc(id)}" data-agent="${esc(agent)}"
-            data-running="false" onclick="toggleTimer(this, ${argument(id)}, ${argument(agent)})">Play</button>
-          <button title="Show TIME UP" aria-label="Show TIME UP" onclick="quick(${argument(id)}, ${argument(prefix + "show")})">S</button>
-          <button title="Hide TIME UP" aria-label="Hide TIME UP" onclick="quick(${argument(id)}, ${argument(prefix + "hide")})">H</button>
+          <button class="primary mobile-toggle" data-pc="${esc(id)}"
+            data-running="false" onclick="toggleTimer(this, ${argument(id)})">Play</button>
+          <button title="Show TIME UP" aria-label="Show TIME UP" onclick="quick(${argument(id)}, ${argument("show")})">S</button>
+          <button title="Hide TIME UP" aria-label="Hide TIME UP" onclick="quick(${argument(id)}, ${argument("hide")})">H</button>
         </span>`;
       }
-      function updateToggle(id, agent, isRunning) {
+      function updateToggle(id, isRunning) {
         document.querySelectorAll(".mobile-toggle").forEach((button) => {
-          if (button.dataset.pc === String(id) && button.dataset.agent === String(agent || "")) {
+          if (button.dataset.pc === String(id)) {
             button.dataset.running = isRunning ? "true" : "false";
             button.textContent = isRunning ? "Pause" : "Play";
           }
         });
       }
-      async function toggleTimer(button, id, agent = "") {
+      async function toggleTimer(button, id) {
         const action = button.dataset.running === "true" ? "pause" : "play";
-        await quick(id, agent ? agent + "/" + action : action);
+        await quick(id, action);
       }
       function cardHTML(p) {
         const id = esc(p.id),
           arg = argument(p.id);
         return `<article class="dashboard-card">
-          <div class="dashboard-head"><div><b>${esc(p.name)}</b><div class="hint">${esc(p.address)}</div></div>
+          <div class="dashboard-head"><div><b>${esc(p.name)}</b><div class="hint">${esc(p.address)}</div>${timerID(p) ? '<div class="hint">On-behalf timer ' + esc(timerID(p)) + '</div>' : ''}</div>
             <button onclick="showDetail(${arg})">Details</button></div>
           <div id="dt-${id}" class="dashboard-time">--:--:--</div>
           <div id="ds-${id}" class="status">Checking...</div>
           <div class="row" style="margin-top:10px">${timerButtons(p.id)}</div>
-          <div id="seen-${id}" class="hint"></div><div id="da-${id}" class="hint" style="margin-top:8px"></div>
+          <div id="seen-${id}" class="hint"></div>
           <div class="compact"><div class="row">
             <input id="cu-${id}" type="time" step="1" title="Run until" oninput="cardUntil(${arg})">
             <input id="cv-${id}" type="text" inputmode="text" spellcheck="false" autocapitalize="off" value="5" placeholder="10, +10 or -10"
@@ -804,31 +810,37 @@
         $("detail").hidden = false;
         $("pcName").textContent = p.name;
         $("pcAddress").textContent = p.address;
+        $("overlayControls").hidden = !!timerID(p);
+        $("time").textContent = "--:--:--";
+        $("status").textContent = "Checking...";
+        $("status").className = "status";
+        $("msg").textContent = "";
         renderList();
-        renderCachedStatus(p.id, pcPollers.get(p.id), true);
+        renderCachedStatus(p.id, hostPollers.get(hostAddress(p)), true);
         pollOne(p);
       }
-      function schedulePCPoller(id, poller) {
+      function scheduleHostPoller(address, poller) {
         clearInterval(poller.timer);
-        poller.timer = setInterval(() => pollOne(pcs.find(p => p.id === id)), uiSettings.pollIntervalSeconds * 1000);
+        poller.timer = setInterval(() => pollHost(address, poller), uiSettings.pollIntervalSeconds * 1000);
       }
       function syncPCPollers() {
-        for (const [id, poller] of pcPollers) {
-          const target = pcs.find(p => p.id === id);
-          if (!isActive(target) || target.address !== poller.address) {
+        const addresses = new Set(activePCs().map(hostAddress));
+        for (const [address, poller] of hostPollers) {
+          if (!addresses.has(address)) {
             clearInterval(poller.timer);
-            pcPollers.delete(id);
-            cancelPCRequests(id);
+            hostPollers.delete(address);
+            poller.controller?.abort();
           }
         }
-        for (const p of activePCs()) {
-          if (pcPollers.has(p.id)) continue;
-          const poller = { address: p.address, promise: null, timer: null, sample: null, failedAt: null };
-          pcPollers.set(p.id, poller);
-          // Each PC has its own clock. Slow requests skip ticks only for that PC.
-          schedulePCPoller(p.id, poller);
-          pollOne(p);
+        for (const address of addresses) {
+          if (hostPollers.has(address)) continue;
+          const poller = { address, promise: null, timer: null, sample: null, failedAt: null, controller: null };
+          hostPollers.set(address, poller);
+          // Each host has one clock and one request for all its active timers.
+          scheduleHostPoller(address, poller);
+          pollHost(address, poller);
         }
+        renderCachedStatuses();
       }
       async function refreshSavedList() {
         try { await load(); }
@@ -861,7 +873,7 @@
           $("discoveryStatus").textContent =
             "Distributed to " +
             result.sent +
-            " PCs." +
+            " hosts." +
             (failed.length
               ? " Failed: " + failed.map((r) => r.address + " (" + r.error + ")").join("; ")
               : "");
@@ -871,38 +883,43 @@
           button.disabled = false;
         }
       }
-      async function status(id) {
-        return pcRequest(id, "status");
-      }
       async function pollAll() {
-        await Promise.all(activePCs().map(pollOne));
+        await Promise.all([...hostPollers].map(([address, poller]) => pollHost(address, poller)));
       }
       function pollOne(p) {
         if (!isActive(p)) return;
-        const poller = pcPollers.get(p.id);
-        if (!poller || poller.address !== p.address) return;
+        const address = hostAddress(p);
+        return pollHost(address, hostPollers.get(address));
+      }
+      function pollHost(address, poller) {
+        if (!poller || hostPollers.get(address) !== poller || !hostSystems(address).length) return;
         // Automatic ticks, detail navigation and manual refresh share this request.
         if (poller.promise) return poller.promise;
-        poller.promise = fetchPCStatus(p, poller).finally(() => { poller.promise = null; });
+        poller.promise = fetchHostStatus(address, poller).finally(() => { poller.promise = null; });
         return poller.promise;
       }
-      async function fetchPCStatus(p, poller) {
-        const isCurrent = () => pcPollers.get(p.id) === poller &&
-          isActive(pcs.find(item => item.id === p.id)) &&
-          pcs.find(item => item.id === p.id).address === p.address;
+      function validTimerStatus(t) {
+        return t && Number.isSafeInteger(t.remaining_seconds) && t.remaining_seconds >= 0 && typeof t.is_running === "boolean";
+      }
+      async function fetchHostStatus(address, poller) {
+        const isCurrent = () => hostPollers.get(address) === poller && hostSystems(address).length;
+        const controller = new AbortController();
+        poller.controller = controller;
+        const timeout = setTimeout(() => controller.abort(), 4000);
         try {
-          const t = await status(p.id);
+          const t = await request(address + "/status", { signal: controller.signal, credentials: "omit", mode: "cors" });
           if (!isCurrent()) return;
-          if (!Number.isSafeInteger(t.remaining_seconds) || t.remaining_seconds < 0 || typeof t.is_running !== "boolean") {
-            throw new Error("Invalid timer status");
-          }
+          if (!validTimerStatus(t)) throw new Error("Invalid timer status");
           poller.sample = { status: t, receivedAt: performance.now() };
           poller.failedAt = null;
-          renderCachedStatus(p.id, poller, true);
+          renderHostStatuses(address, poller, true);
         } catch (e) {
           if (!isCurrent()) return;
           if (poller.failedAt === null) poller.failedAt = performance.now();
-          renderCachedStatus(p.id, poller, true);
+          renderHostStatuses(address, poller, true);
+        } finally {
+          clearTimeout(timeout);
+          poller.controller = null;
         }
       }
       function displayedStatus(status, elapsed) {
@@ -911,87 +928,40 @@
           ? Math.max(0, status.remaining_seconds - elapsed) : status.remaining_seconds };
       }
       function renderCachedStatuses() {
-        for (const [id, poller] of pcPollers) renderCachedStatus(id, poller, true);
+        for (const [address, poller] of hostPollers) renderHostStatuses(address, poller, true);
+      }
+      function renderHostStatuses(address, poller, full = false) {
+        for (const p of hostSystems(address)) renderCachedStatus(p.id, poller, full);
       }
       function renderCachedStatus(id, poller, full = false) {
         const p = pcs.find(p => p.id === id);
-        if (!poller || !isActive(p) || p.address !== poller.address) return;
+        if (!poller || !isActive(p) || hostAddress(p) !== poller.address) return;
         const offline = poller.failedAt !== null;
         const sample = poller.sample;
         if (!sample && !offline) return;
         const elapsed = sample && uiSettings.falsePolling
           ? Math.max(0, Math.floor(((poller.failedAt ?? performance.now()) - sample.receivedAt) / 1000)) : 0;
-        const t = sample ? displayedStatus(sample.status, elapsed) : null;
-        const agents = sample ? (sample.status.on_behalf_of || []).map(a => displayedStatus(a, elapsed)) : [];
-        const text = offline ? "Offline" : statusLabel(t);
-        const className = "status " + (offline || t.time_up_visible ? "alert" : t.is_running ? "running" : "");
+        const hosted = sample && Array.isArray(sample.status.on_behalf_of) ? sample.status.on_behalf_of : [];
+        const raw = sample ? (timerID(p) ? hosted.find(a => a && String(a.id) === timerID(p)) : sample.status) : null;
+        const t = validTimerStatus(raw) ? displayedStatus(raw, elapsed) : null;
+        const text = offline ? "Offline" : t ? statusLabel(t) : "Unavailable";
+        const className = "status " + (offline || !t || t.time_up_visible ? "alert" : t.is_running ? "running" : "");
         const time = $("dt-" + id), label = $("ds-" + id);
         if (time) time.textContent = t ? fmt(t.remaining_seconds) : "--:--:--";
         if (label) { label.textContent = text; label.className = className; }
-        renderAgentSummary(id, offline ? [] : agents);
         if (selected === id) {
+          $("overlayControls").hidden = !!timerID(p);
           $("time").textContent = t ? fmt(t.remaining_seconds) : "--:--:--";
           $("status").textContent = text;
           $("status").className = className;
-          if (full) renderAgents(offline ? [] : agents);
-          else for (const agent of agents) {
-            const value = $("agent-time-" + agent.id);
-            if (value) value.textContent = fmt(agent.remaining_seconds) + " · " + statusLabel(agent);
-          }
         }
         if (full && t) {
-          updateToggle(id, "", t.is_running);
-          agents.forEach(a => updateToggle(id, a.id, a.is_running));
+          updateToggle(id, t.is_running);
         }
       }
       function falsePollingTick() {
         if (!uiSettings.falsePolling) return;
-        for (const [id, poller] of pcPollers) renderCachedStatus(id, poller);
-      }
-      function renderAgentSummary(id, agents) {
-        const el = $("da-" + id);
-        if (!el) return;
-        el.innerHTML = agents
-          .map(
-            (a) =>
-              '<span title="On-behalf agent">' +
-              esc(a.name) +
-              " " +
-              fmt(a.remaining_seconds) +
-              " · " +
-              statusLabel(a) +
-              "</span>",
-          )
-          .join("<br>");
-      }
-      function renderAgents(agents) {
-        $("agents").innerHTML = agents.length
-          ? '<div class="detail-card"><h3>On-behalf agents</h3>' +
-            agents
-              .map(
-                (a) => `<div class="row" style="margin-top:7px">
-            <b style="min-width:100px">${esc(a.name)}</b><span id="agent-time-${esc(a.id)}">${fmt(a.remaining_seconds)} · ${statusLabel(a)}</span>
-            ${timerButtons(selected, a.id)}
-            <button onclick="agentValue(${argument(a.id)}, false)">Set</button>
-            <button onclick="agentValue(${argument(a.id)}, true)">±</button>
-          </div>`,
-              )
-              .join("") +
-            "</div>"
-          : "";
-      }
-      async function agentCommand(agent, action, body) {
-        if (await command(selected, agent + "/" + action, body)) pollOne(pc());
-      }
-      async function agentValue(agent, adjust) {
-        const text = prompt(adjust ? "Seconds to add or subtract:" : "Set duration in seconds:", "300");
-        if (text === null) return;
-        const value = Number(text);
-        if (!Number.isInteger(value) || (!adjust && value < 0)) {
-          alert("Enter a whole number" + (adjust ? "" : " of zero or greater"));
-          return;
-        }
-        await agentCommand(agent, adjust ? "tweak" : "set", adjust ? { amount: value } : { seconds: value });
+        for (const [address, poller] of hostPollers) renderHostStatuses(address, poller);
       }
       async function command(id, action, body) {
         try {
@@ -1094,7 +1064,7 @@
       }
       function openPC(edit = false) {
         const p = edit ? pc() : null;
-        $("dialogTitle").textContent = p ? "Edit PC" : "Add PC";
+        $("dialogTitle").textContent = p ? "Edit system" : "Add system";
         $("name").value = p ? p.name : "";
         $("address").value = p ? p.address.replace(/^http:\/\//, "") : "";
         $("uiPort").value = p && p.ui_port ? p.ui_port : "";
@@ -1141,7 +1111,7 @@
             const s = await request("/api/discovery/status");
             if (!s.running) {
               $("discoveryStatus").textContent =
-                "Discovery complete: " + (s.last.found || 0) + " timers found.";
+                "Discovery complete: " + (s.last.hosts_found ?? s.last.found ?? 0) + " hosts, " + (s.last.found || 0) + " timers found.";
               await load();
               break;
             }
