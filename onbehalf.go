@@ -39,6 +39,7 @@ func initializeOnBehalfTimers() {
 			continue
 		}
 		config.ID = id
+		config.SpecialCommands = normalizeSpecialCommands(config.SpecialCommands, "on-behalf timer "+id)
 		if config.Name == "" {
 			config.Name = "Agent " + id
 		}
@@ -73,7 +74,9 @@ func tickVirtualTimers() {
 func (timer *VirtualTimer) status() TimerStatus {
 	timer.Lock()
 	defer timer.Unlock()
-	return timer.Countdown.status(timer.Config.ID, timer.Config.Name, timer.AlertVisible)
+	status := timer.Countdown.status(timer.Config.ID, timer.Config.Name, timer.AlertVisible)
+	status.SpecialCommands = specialCommandLabels(timer.Config.SpecialCommands)
+	return status
 }
 
 func virtualTimerList() []*VirtualTimer {
@@ -139,6 +142,9 @@ func registerOnBehalfHandlers(mux *http.ServeMux) {
 			writeJSON(w, 200, timer.status())
 		})
 		registerTimerCommands(mux, prefix, timer.applyAction)
+		owner := localRegistryPC()
+		owner.ID, owner.Name, owner.Address = id, timer.Config.Name, owner.Address+prefix
+		registerSpecialCommands(mux, prefix, timer.Config.SpecialCommands, timer.Config.CommandTimeoutSeconds, owner, &timer.activity)
 	}
 }
 

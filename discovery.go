@@ -27,16 +27,17 @@ type NodeIdentity struct {
 }
 
 type TimerIdentity struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Path string `json:"path"`
+	ID              string           `json:"id"`
+	Name            string           `json:"name"`
+	Path            string           `json:"path"`
+	SpecialCommands []SpecialCommand `json:"special_commands"`
 }
 
 func localNodeIdentity() NodeIdentity {
 	identity := NodeIdentity{Service: "overlay-timer", Name: configuredFriendlyName(), TimerPort: appConfig.TimerPort, UIPort: appConfig.UIDiscoveryPort}
-	identity.Timers = []TimerIdentity{{ID: "", Name: identity.Name, Path: ""}}
+	identity.Timers = []TimerIdentity{{ID: "", Name: identity.Name, Path: "", SpecialCommands: specialCommandLabels(appConfig.SpecialCommands)}}
 	for _, timer := range virtualTimerList() {
-		identity.Timers = append(identity.Timers, TimerIdentity{ID: timer.Config.ID, Name: timer.Config.Name, Path: "/" + timer.Config.ID})
+		identity.Timers = append(identity.Timers, TimerIdentity{ID: timer.Config.ID, Name: timer.Config.Name, Path: "/" + timer.Config.ID, SpecialCommands: specialCommandLabels(timer.Config.SpecialCommands)})
 	}
 	return identity
 }

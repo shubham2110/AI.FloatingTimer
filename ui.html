@@ -222,6 +222,19 @@
       .mobile-timer-buttons {
         display: none;
       }
+      .special-commands {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 8px;
+      }
+      .special-commands[hidden], .special-short-name {
+        display: none;
+      }
+      .special-commands button {
+        max-width: 100%;
+        overflow-wrap: anywhere;
+      }
       #settingsDialog {
         min-width: 0;
         width: min(440px, calc(100vw - 24px));
@@ -281,6 +294,7 @@
             "time"
             "status"
             "actions"
+            "special"
             "compact";
           gap: 3px;
           padding: 7px;
@@ -346,6 +360,22 @@
         }
         .mobile-timer-buttons .mobile-toggle {
           min-width: 55px;
+        }
+        .special-full-name {
+          display: none;
+        }
+        .special-short-name {
+          display: inline;
+        }
+        .dashboard-card .special-commands {
+          grid-area: special;
+          margin-top: 0;
+          gap: 4px;
+        }
+        .special-commands button {
+          min-height: 32px;
+          padding: 4px 8px;
+          font-size: 12px;
         }
         .dashboard-card .compact {
           grid-area: compact;
@@ -439,6 +469,7 @@
               <button title="Show TIME UP" onclick="callSelected('show')">Show</button>
               <button title="Hide TIME UP" onclick="callSelected('hide')">Hide</button>
             </div>
+            <div id="detailSpecialCommands" class="special-commands" hidden></div>
             <div class="detail-grid">
               <div class="detail-card">
                 <h3>Set duration</h3>
@@ -529,6 +560,7 @@
         selected = null;
       const pendingActive = new Map(),
         pendingRequests = new Map(),
+        pendingSpecial = new Set(),
         hostPollers = new Map();
       let listPromise = null;
       const $ = (id) => document.getElementById(id);
@@ -785,6 +817,7 @@
           <div id="dt-${id}" class="dashboard-time">--:--:--</div>
           <div id="ds-${id}" class="status">Checking...</div>
           <div class="row" style="margin-top:10px">${timerButtons(p.id)}</div>
+          <div id="special-${id}" class="special-commands" hidden></div>
           <div id="seen-${id}" class="hint"></div>
           <div class="compact"><div class="row">
             <input id="cu-${id}" type="time" step="1" title="Run until" oninput="cardUntil(${arg})">
@@ -815,6 +848,9 @@
         $("status").textContent = "Checking...";
         $("status").className = "status";
         $("msg").textContent = "";
+        $("detailSpecialCommands").innerHTML = "";
+        $("detailSpecialCommands").dataset.specialMarkup = "";
+        $("detailSpecialCommands").hidden = true;
         renderList();
         renderCachedStatus(p.id, hostPollers.get(hostAddress(p)), true);
         pollOne(p);
@@ -901,6 +937,75 @@
       function validTimerStatus(t) {
         return t && Number.isSafeInteger(t.remaining_seconds) && t.remaining_seconds >= 0 && typeof t.is_running === "boolean";
       }
+      function cachedTimerStatus(p, poller = hostPollers.get(hostAddress(p))) {
+        const status = poller?.sample?.status;
+        if (!status) return null;
+        if (!timerID(p)) return status;
+        return Array.isArray(status.on_behalf_of)
+          ? status.on_behalf_of.find(a => a && String(a.id) === timerID(p)) : null;
+      }
+      function availableSpecialCommands(status) {
+        return Array.isArray(status?.special_commands)
+          ? status.special_commands.filter(c => c && typeof c.name === "string" && c.name.trim()) : [];
+      }
+      function specialButtonsHTML(p, status, disabled = false) {
+        return availableSpecialCommands(status).map(c => {
+          const shortName = typeof c.short_name === "string" && c.short_name.trim() ? c.short_name : c.name;
+          const pending = pendingSpecial.has(JSON.stringify([p.id, c.name]));
+          return `<button title="${esc(c.name)}" aria-label="${esc(c.name)}" ${disabled || pending ? "disabled" : ""}
+            onclick="specialCommand(${argument(p.id)}, ${argument(c.name)})">
+            <span class="special-full-name">${esc(c.name)}</span><span class="special-short-name" aria-hidden="true">${esc(shortName)}</span>
+          </button>`;
+        }).join("");
+      }
+      function renderSpecialCommands(p) {
+        const poller = hostPollers.get(hostAddress(p));
+        const raw = cachedTimerStatus(p, poller);
+        const html = specialButtonsHTML(p, raw, poller?.failedAt !== null || !validTimerStatus(raw));
+        const targets = [$("special-" + p.id)];
+        if (selected === p.id) targets.push($("detailSpecialCommands"));
+        for (const el of targets) {
+          if (!el) continue;
+          // Compare the source markup, since browsers normalize innerHTML.
+          // Reusing unchanged buttons preserves keyboard focus during polling.
+          if (el.dataset.specialMarkup !== html) {
+            el.innerHTML = html;
+            el.dataset.specialMarkup = html;
+          }
+          el.hidden = !html;
+        }
+      }
+      async function specialCommand(id, name) {
+        const p = pcs.find(p => p.id === id);
+        if (!isActive(p)) return;
+        const poller = hostPollers.get(hostAddress(p));
+        if (!poller || poller.failedAt !== null || !availableSpecialCommands(cachedTimerStatus(p)).some(c => c.name === name)) return;
+        const key = JSON.stringify([id, name]);
+        if (pendingSpecial.has(key)) return;
+        pendingSpecial.add(key);
+        renderSpecialCommands(p);
+        let message;
+        try {
+          await pcRequest(id, "special", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name }),
+          });
+          message = name + ": requested";
+        } catch (e) {
+          message = name + ": " + e.message;
+        } finally {
+          pendingSpecial.delete(key);
+          const current = pcs.find(p => p.id === id);
+          if (isActive(current)) {
+            renderSpecialCommands(current);
+            if (current.address === p.address) {
+              const target = id === selected ? $("msg") : $("dm-" + id);
+              if (target) target.textContent = message;
+            }
+          }
+        }
+      }
       async function fetchHostStatus(address, poller) {
         const isCurrent = () => hostPollers.get(address) === poller && hostSystems(address).length;
         const controller = new AbortController();
@@ -938,11 +1043,11 @@
         if (!poller || !isActive(p) || hostAddress(p) !== poller.address) return;
         const offline = poller.failedAt !== null;
         const sample = poller.sample;
+        renderSpecialCommands(p);
         if (!sample && !offline) return;
         const elapsed = sample && uiSettings.falsePolling
           ? Math.max(0, Math.floor(((poller.failedAt ?? performance.now()) - sample.receivedAt) / 1000)) : 0;
-        const hosted = sample && Array.isArray(sample.status.on_behalf_of) ? sample.status.on_behalf_of : [];
-        const raw = sample ? (timerID(p) ? hosted.find(a => a && String(a.id) === timerID(p)) : sample.status) : null;
+        const raw = cachedTimerStatus(p, poller);
         const t = validTimerStatus(raw) ? displayedStatus(raw, elapsed) : null;
         const text = offline ? "Offline" : t ? statusLabel(t) : "Unavailable";
         const className = "status " + (offline || !t || t.time_up_visible ? "alert" : t.is_running ? "running" : "");

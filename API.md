@@ -415,6 +415,8 @@ malformed Windows executable headers with Go 1.25 and older MinGW/CGO toolchains
 | `GET /status` | Existing local fields plus `name` and an `on_behalf_of` array. |
 | `GET /1/status` | Status for configured on-behalf timer 1. |
 | `POST /1/{action}` | Set, tweak, play, pause, toggle, reset, show, hide, or dismiss timer 1. |
+| `POST /special` | Run a named special command configured for the host's own timer. |
+| `POST /1/special` | Run a named special command configured for on-behalf timer 1. |
 
 Other numeric IDs work the same way. Each on-behalf status includes `id` and `name` plus
 the standard timer fields. External commands come only from local configuration and
@@ -433,8 +435,13 @@ identity. For a host running its own timer and on-behalf timer 1:
   "timer_port": 18081,
   "ui_port": 18082,
   "timers": [
-    { "id": "", "name": "PC4", "path": "" },
-    { "id": "1", "name": "Stage display", "path": "/1" }
+    { "id": "", "name": "PC4", "path": "", "special_commands": [] },
+    {
+      "id": "1",
+      "name": "Stage display",
+      "path": "/1",
+      "special_commands": [{ "name": "switch_off", "short_name": "OFF" }]
+    }
   ]
 }
 ```
@@ -455,6 +462,45 @@ array. For example, the record `http://192.168.1.15:18081/1` gets its countdown 
 On-behalf cards have their own selection and controls; the manager does not duplicate
 them inside the root card. Overlay positioning and drag are available only for the
 host's own timer. Missing/invalid on-behalf status is displayed as **Unavailable**.
+
+### Special command API
+
+Define `special_commands` in the host's local configuration, either at the root or
+inside an `on_behalf_of` entry. See the [configuration example](README.md#special-command-buttons).
+Only `name` and `short_name` are advertised in each identity timer and in each timer
+status's `special_commands` array. Executable paths and arguments are never advertised
+and cannot be supplied or changed through these routes.
+
+```http
+POST /1/special
+Content-Type: application/json
+
+{"name":"switch_off"}
+```
+
+Use `/special` for the host's own timer. Names are case-sensitive and scoped to the
+selected timer; a root request cannot select an on-behalf command. The only request
+field is `name`. The response is:
+
+```json
+{"status":"accepted","name":"switch_off"}
+```
+
+HTTP **202** means the process has been scheduled, not that its action succeeded.
+Malformed bodies/extra fields return **400**, unknown commands return **404**, and
+methods other than POST return **405** (CORS preflight OPTIONS returns **204**).
+Execution uses the executable and arguments from local configuration, with the
+owner's `command_timeout_seconds` (default 10 seconds). Processes run asynchronously
+on the owning host. Completion, exit failures, and timeouts are recorded as
+`special_command` events in that timer's activity CSV. The handler leaves countdown
+and alert state unchanged and does not run show/hide hooks.
+
+The UI reads button labels from its existing aggregate root `/status` request and
+matches each on-behalf entry by ID. Desktop layouts display `name`; mobile layouts
+display `short_name` (falling back to `name` when empty). Both card and Details views
+have the buttons. Pending requests disable the matching button in both views, and
+offline buttons are disabled until a fresh status response arrives. Existing systems
+receive updated labels without rediscovery after their host app restarts.
 
 ### Management and registry behavior
 

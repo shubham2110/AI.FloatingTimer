@@ -125,22 +125,25 @@ type DiscoveryConfig struct {
 }
 
 type OnBehalfConfig struct {
-	ID                    string   `json:"id"`
-	Name                  string   `json:"name"`
-	ShowCommand           []string `json:"show_command"`
-	HideCommand           []string `json:"hide_command"`
-	CommandTimeoutSeconds int      `json:"command_timeout_seconds"`
+	ID                    string                 `json:"id"`
+	Name                  string                 `json:"name"`
+	ShowCommand           []string               `json:"show_command"`
+	HideCommand           []string               `json:"hide_command"`
+	SpecialCommands       []SpecialCommandConfig `json:"special_commands"`
+	CommandTimeoutSeconds int                    `json:"command_timeout_seconds"`
 }
 
 type AppConfig struct {
-	KillOnTimeUp          bool             `json:"kill_on_time_up"`
-	AppsToCloseOnTimeUp   []string         `json:"apps_to_close_on_time_up"`
-	ForceKillAfterSeconds int              `json:"force_kill_after_seconds"`
-	FriendlyName          string           `json:"friendly_name"`
-	TimerPort             int              `json:"timer_port"`
-	UIDiscoveryPort       int              `json:"ui_discovery_port"`
-	Discovery             DiscoveryConfig  `json:"discovery"`
-	OnBehalfOf            []OnBehalfConfig `json:"on_behalf_of"`
+	KillOnTimeUp          bool                   `json:"kill_on_time_up"`
+	AppsToCloseOnTimeUp   []string               `json:"apps_to_close_on_time_up"`
+	ForceKillAfterSeconds int                    `json:"force_kill_after_seconds"`
+	FriendlyName          string                 `json:"friendly_name"`
+	TimerPort             int                    `json:"timer_port"`
+	UIDiscoveryPort       int                    `json:"ui_discovery_port"`
+	Discovery             DiscoveryConfig        `json:"discovery"`
+	OnBehalfOf            []OnBehalfConfig       `json:"on_behalf_of"`
+	SpecialCommands       []SpecialCommandConfig `json:"special_commands"`
+	CommandTimeoutSeconds int                    `json:"command_timeout_seconds"`
 }
 
 var appConfig = defaultAppConfig()
@@ -151,6 +154,8 @@ func defaultAppConfig() AppConfig {
 		ForceKillAfterSeconds: 2,
 		TimerPort:             DefaultTimerPort,
 		UIDiscoveryPort:       DefaultUIPort,
+		SpecialCommands:       []SpecialCommandConfig{},
+		CommandTimeoutSeconds: 10,
 		Discovery: DiscoveryConfig{
 			Enabled: false, IntervalSeconds: 300,
 			ConnectTimeoutMilliseconds: 350, MaximumConcurrency: 32,
@@ -334,6 +339,10 @@ var HWND_TOPMOST = ^uintptr(0) // -1
 var instanceMutexHandle uintptr
 
 func normalizeAppConfig() {
+	if appConfig.CommandTimeoutSeconds < 1 {
+		appConfig.CommandTimeoutSeconds = 10
+	}
+	appConfig.SpecialCommands = normalizeSpecialCommands(appConfig.SpecialCommands, "local timer")
 	if appConfig.TimerPort < 1 || appConfig.TimerPort > 65535 {
 		appConfig.TimerPort = DefaultTimerPort
 	}
@@ -709,6 +718,8 @@ func startBackgroundAPI(listener net.Listener) {
 		writeJSON(w, http.StatusOK, localNodeIdentity())
 	})
 	registerTimerCommands(http.DefaultServeMux, "", applyLocalAction)
+	registerSpecialCommands(http.DefaultServeMux, "", appConfig.SpecialCommands, appConfig.CommandTimeoutSeconds,
+		localRegistryPC(), &activityLog)
 	registerOnBehalfHandlers(http.DefaultServeMux)
 
 	http.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
@@ -718,9 +729,7 @@ func startBackgroundAPI(listener net.Listener) {
 			return
 		}
 
-		state.Lock()
-		status := state.Countdown.status("", configuredFriendlyName(), state.TimeUpVisible)
-		state.Unlock()
+		status := localTimerStatus()
 		writeJSON(w, http.StatusOK, struct {
 			TimerStatus
 			OnBehalfOf []TimerStatus `json:"on_behalf_of"`

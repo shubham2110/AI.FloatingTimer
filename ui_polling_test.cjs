@@ -331,3 +331,122 @@ test('invalid settings cannot overwrite the current interval', async () => {
     assert.equal(h.run('uiSettings.pollIntervalSeconds'), 5);
   }
 });
+
+test('special buttons use each timer labels and send only the name to the owning endpoint', async () => {
+  const h = harness([sample('pc'), agent('pc', '1'), agent('pc', '20')]);
+  const name = 'Switch "off" & <TV>';
+  h.responses.set('http://pc:18081/status', { ...status,
+    special_commands: [{ name: 'Lock PC', short_name: 'LOCK' }],
+    on_behalf_of: [
+      { ...status, id: '1', special_commands: [{ name, short_name: 'OFF' }] },
+      { ...status, id: '20', special_commands: [] },
+    ],
+  });
+  h.start();
+  await h.advance(0);
+  assert.match(h.node('special-pc').innerHTML, /special-full-name">Lock PC</);
+  assert.match(h.node('special-pc').innerHTML, /special-short-name" aria-hidden="true">LOCK</);
+  assert.match(h.node('special-pc-1').innerHTML, /Switch &quot;off&quot; &amp; &lt;TV&gt;/);
+  assert.match(h.node('special-pc-1').innerHTML, />OFF<\/span>/);
+  assert.ok(!h.node('special-pc').innerHTML.includes('OFF'));
+  assert.equal(h.node('special-pc-20').hidden, true);
+  h.run('showDetail("pc-1")');
+  await flush();
+  assert.equal(h.node('detailSpecialCommands').innerHTML, h.node('special-pc-1').innerHTML);
+  const polls = h.calls.filter(c => c.url.endsWith('/status')).length;
+  await h.run(`specialCommand("pc-1", ${JSON.stringify(name)})`);
+  await h.run('specialCommand("pc", "Lock PC")');
+  const childCall = h.calls.find(c => c.url === 'http://pc:18081/1/special');
+  const rootCall = h.calls.find(c => c.url === 'http://pc:18081/special');
+  assert.equal(childCall.options.method, 'POST');
+  assert.deepEqual(JSON.parse(childCall.options.body), { name });
+  assert.deepEqual(JSON.parse(rootCall.options.body), { name: 'Lock PC' });
+  assert.equal(h.node('msg').textContent, name + ': requested');
+  assert.equal(h.calls.filter(c => c.url.endsWith('/status')).length, polls);
+  assert.ok(!h.calls.some(c => c.url.endsWith('/identity') || /\/\d+\/status$/.test(c.url)));
+});
+
+test('pending special commands disable both views and coalesce repeated clicks without blocking polls', async () => {
+  const h = harness([sample('pc'), agent('pc', '1')]);
+  h.responses.set('http://pc:18081/status', { ...status, on_behalf_of: [
+    { ...status, id: '1', special_commands: [{ name: 'switch_off', short_name: 'OFF' }] },
+  ] });
+  h.start();
+  await h.advance(0);
+  h.run('showDetail("pc-1")');
+  await flush();
+  h.slow.add('http://pc:18081/1/special');
+  h.run('specialCommand("pc-1", "switch_off"); specialCommand("pc-1", "switch_off");');
+  await h.advance(2000);
+  assert.equal(h.calls.filter(c => c.url.endsWith('/special')).length, 1);
+  assert.match(h.node('special-pc-1').innerHTML, /disabled/);
+  assert.match(h.node('detailSpecialCommands').innerHTML, /disabled/);
+  assert.ok(h.calls.some(c => c.url === 'http://pc:18081/status' && c.at === 2000));
+  h.calls.find(c => c.url.endsWith('/special')).resolve({ status: 'accepted' });
+  await flush();
+  assert.ok(!h.node('special-pc-1').innerHTML.includes('disabled'));
+  assert.ok(!h.node('detailSpecialCommands').innerHTML.includes('disabled'));
+});
+
+test('special commands work for active agents when the host timer is unchecked and reject cross-timer names', async () => {
+  const h = harness([sample('pc', true), agent('pc', '1')]);
+  h.responses.set('http://pc:18081/status', { ...status,
+    special_commands: [{ name: 'Lock PC', short_name: 'LOCK' }],
+    on_behalf_of: [{ ...status, id: '1', special_commands: [{ name: 'switch_off', short_name: 'OFF' }] }],
+  });
+  h.start();
+  await h.advance(0);
+  await h.run('specialCommand("pc", "Lock PC"); specialCommand("pc-1", "Lock PC");');
+  assert.equal(h.calls.filter(c => c.url.endsWith('/special')).length, 0);
+  await h.run('specialCommand("pc-1", "switch_off")');
+  assert.equal(h.calls.filter(c => c.url === 'http://pc:18081/1/special').length, 1);
+});
+
+test('special labels refresh from status and clear for missing commands or legacy hosts', async () => {
+  const h = harness([sample('pc')]);
+  h.responses.set('http://pc:18081/status', { ...status,
+    special_commands: [null, {}, { name: 'Valid command' }],
+  });
+  h.start();
+  await h.advance(0);
+  assert.match(h.node('special-pc').innerHTML, /special-short-name" aria-hidden="true">Valid command</);
+  h.responses.set('http://pc:18081/status', status);
+  await h.advance(1000);
+  assert.equal(h.node('special-pc').innerHTML, '');
+  assert.equal(h.node('special-pc').hidden, true);
+  await h.run('specialCommand("pc", "Valid command")');
+  assert.ok(!h.calls.some(c => c.url.endsWith('/special')));
+});
+
+test('special request timeouts restore buttons and display an error instead of success', async () => {
+  const h = harness([sample('pc')]);
+  h.responses.set('http://pc:18081/status', { ...status,
+    special_commands: [{ name: 'switch_off', short_name: 'OFF' }],
+  });
+  h.start();
+  await h.advance(0);
+  h.slow.add('http://pc:18081/special');
+  const command = h.run('specialCommand("pc", "switch_off")');
+  await h.advance(4100);
+  await command;
+  assert.match(h.node('dm-pc').textContent, /switch_off: aborted/);
+  assert.ok(!h.node('special-pc').innerHTML.includes('disabled'));
+  assert.equal(h.run('pendingSpecial.size'), 0);
+});
+
+test('unchanged status preserves special button elements despite browser HTML normalization', async () => {
+  const h = harness([sample('pc')]);
+  let markup = '', replacements = 0;
+  Object.defineProperty(h.node('special-pc'), 'innerHTML', {
+    get: () => markup,
+    set(value) { markup = value.replace(/\s+/g, ' '); replacements++; },
+  });
+  h.responses.set('http://pc:18081/status', { ...status,
+    special_commands: [{ name: 'switch_off', short_name: 'OFF' }],
+  });
+  h.start();
+  await h.advance(0);
+  const before = replacements;
+  await h.advance(3000);
+  assert.equal(replacements, before, 'polling must not replace unchanged buttons and lose keyboard focus');
+});

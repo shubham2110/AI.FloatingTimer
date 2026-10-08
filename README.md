@@ -458,6 +458,8 @@ malformed Windows executable headers with Go 1.25 and older MinGW/CGO toolchains
 | `GET /status` | Existing local fields plus `name` and an `on_behalf_of` array. |
 | `GET /1/status` | Status for configured on-behalf timer 1. |
 | `POST /1/{action}` | Set, tweak, play, pause, toggle, reset, show, hide, or dismiss timer 1. |
+| `POST /special` | Run a locally configured special command by name for the host's own timer. |
+| `POST /1/special` | Run a locally configured special command by name for on-behalf timer 1. |
 
 Other numeric IDs work the same way. Each on-behalf status includes `id` and `name` plus
 the standard timer fields. External commands come only from local configuration and
@@ -558,7 +560,8 @@ PC B's timer API port, not its management UI port.
 | `id` | A unique string containing digits, such as `"1"` or `"2"`. It selects the URL prefix on PC A. Invalid or duplicate IDs are ignored at startup. |
 | `name` | Label shown in the manager. An empty name becomes `Agent <id>`. |
 | `show_command` | Program and arguments to execute on PC A when this timer reaches zero or receives `show`. Use `[]` for no external action. |
-| `hide_command` | Program and arguments to execute on PC A for every other supported timer command. Use `[]` for no external action. |
+| `hide_command` | Program and arguments to execute on PC A for every other standard timer command. Special commands run independently. Use `[]` for no external action. |
+| `special_commands` | Optional list of named buttons with `name`, `short_name`, and `executable`. See [special command buttons](#special-command-buttons). |
 | `command_timeout_seconds` | Timeout for each command process, not the countdown duration. Values below 1, or omission, use 10 seconds. |
 
 Commands are JSON arrays: the first string is the executable, and subsequent
@@ -692,6 +695,79 @@ in the manager nor automatic discovery creates `on_behalf_of` entries.
 | Command fails or times out | Inspect `1/overlay_ui_activity.csv` beside PC A's executable. The hook result records output/errors or `command timed out`; timer `2` uses `2/overlay_ui_activity.csv`. |
 | PC A's timer changes instead of PC B's virtual timer | Use the agent's controls or PC A's `/1/...` routes, not PC A's unprefixed routes. |
 | PC B's displayed countdown differs | Expected: this setup sends show/hide only. View the authoritative countdown on the system card whose address ends in PC A's `/1`. |
+
+### Special command buttons
+
+Add `special_commands` at the top level of `overlay_timer_config.json` for the host's
+own timer, or inside an `on_behalf_of` entry for that timer. Each list belongs only to
+that system; the same name can select different programs on different systems.
+Merge these fields into your existing configuration, keeping your show/hide hooks:
+
+```json
+{
+  "special_commands": [
+    {
+      "name": "Lock PC",
+      "short_name": "LOCK",
+      "executable": ["rundll32.exe", "user32.dll,LockWorkStation"]
+    }
+  ],
+  "command_timeout_seconds": 10,
+  "on_behalf_of": [
+    {
+      "id": "1",
+      "name": "Stage display",
+      "special_commands": [
+        {
+          "name": "switch_off",
+          "short_name": "OFF",
+          "executable": [
+            ".\\extensions\\lgtv\\lgtv_remote.exe",
+            "-ip", "192.168.1.4",
+            "off"
+          ]
+        }
+      ],
+      "command_timeout_seconds": 10
+    }
+  ]
+}
+```
+
+Replace the example executable paths and TV IP with your own. This LG example turns
+off the **TV**; it is not a dedicated PS5 full-shutdown command. Pair the LG tool first
+so it can run without a pairing prompt.
+
+- Desktop buttons display `name`; mobile layouts (720px or narrower) display
+  `short_name`, with the full name retained as the tooltip/accessibility label.
+  Buttons appear on both the system card and its Details page.
+- `name` is also the exact, case-sensitive command identifier. Names may contain
+  spaces. Leading/trailing whitespace is removed. Omitted/empty `short_name` falls
+  back to `name`. Empty names, control characters, missing executables, and duplicate
+  names within a system are ignored and logged at startup.
+- `executable` is an array containing the program followed by individual arguments,
+  matching the show/hide hook convention. A single path string is also accepted for
+  a program without arguments. A string containing a whole shell command is not split.
+  To run a PowerShell script, use an array such as
+  `["powershell.exe", "-NoProfile", "-NonInteractive", "-File", "C:\\TimerScripts\\off.ps1"]`.
+- Programs execute on the machine hosting the timer, under its running user account.
+  The working directory is the folder containing `OverlayTimer.exe`. Relative program
+  paths containing a directory component (such as `.\\tools\\off.exe`) are resolved
+  from that folder; bare program names are looked up using the process PATH.
+- The owner's `command_timeout_seconds` limits each process, defaulting to 10 seconds.
+  Calls return **202 Accepted** and run asynchronously. The UI shows **requested**;
+  completion/failure/timeout is recorded as a `special_command` event in the host's
+  `overlay_ui_activity.csv`, or the on-behalf timer's `<id>/overlay_ui_activity.csv`.
+  A button is disabled while its HTTP request is pending; later clicks can start
+  another process. Commands do not automatically change countdown or alert state
+  and do not invoke the show/hide hooks.
+- Labels appear in `/identity` and the existing `/status` responses. Executable paths
+  and arguments remain local. The UI still uses one aggregate status request per host;
+  it does not make separate identity or on-behalf status requests to fetch buttons.
+
+Restart the owning timer app after editing its configuration, and reload the updated
+manager UI. Existing systems pick up buttons on their next status poll; run Discover
+only if you also added new on-behalf systems. Systems with no commands show no extra buttons.
 
 ### Management and registry behavior
 

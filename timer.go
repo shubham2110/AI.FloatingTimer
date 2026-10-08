@@ -38,13 +38,22 @@ func (c *Countdown) apply(action string, value int) {
 }
 
 type TimerStatus struct {
-	ID                 string `json:"id,omitempty"`
-	Name               string `json:"name,omitempty"`
-	RemainingSeconds   int    `json:"remaining_seconds"`
-	IsRunning          bool   `json:"is_running"`
-	TimerStatus        string `json:"timer_status"`
-	TimeUpVisible      bool   `json:"time_up_visible"`
-	SecondsUntilTimeUp *int   `json:"seconds_until_time_up"`
+	ID                 string           `json:"id,omitempty"`
+	Name               string           `json:"name,omitempty"`
+	RemainingSeconds   int              `json:"remaining_seconds"`
+	IsRunning          bool             `json:"is_running"`
+	TimerStatus        string           `json:"timer_status"`
+	TimeUpVisible      bool             `json:"time_up_visible"`
+	SecondsUntilTimeUp *int             `json:"seconds_until_time_up"`
+	SpecialCommands    []SpecialCommand `json:"special_commands"`
+}
+
+func localTimerStatus() TimerStatus {
+	state.Lock()
+	status := state.Countdown.status("", configuredFriendlyName(), state.TimeUpVisible)
+	state.Unlock()
+	status.SpecialCommands = specialCommandLabels(appConfig.SpecialCommands)
+	return status
 }
 
 func (c *Countdown) status(id, name string, visible bool) TimerStatus {
