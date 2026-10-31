@@ -14,6 +14,24 @@ The management UI obtains saved PC addresses from its own backend, then calls ea
 - JSON request content type, when a body is required: `application/json`
 - Response content type: `application/json`
 - Time values are integer seconds.
+- The embedded dashboard routes all `fetch` calls through its monitored request helper. API clients may use their own HTTP library; incoming service logs still include request ID, method, path, matched route, status, device header (if provided), and duration.
+- The dashboard adds `X-Request-ID` and, when known, `X-Device-ID`. A management request forwarded to a peer receives a new request ID and carries the originating ID in `X-Parent-Request-ID`.
+
+### Management health check
+
+The management service on the configured UI port (18082 by default) provides a read-only health endpoint:
+
+```http api-request.http
+GET /api/health
+```
+
+Success response (`200 OK`):
+
+```json api-response.json
+{"status":"ok","service":"overlay-timer"}
+```
+
+This endpoint confirms only that the management service is responding. It does not test timer reachability, billing availability, or synchronization status.
 
 Example relative request from browser JavaScript:
 
@@ -561,11 +579,55 @@ after the timer has been changed, the server attempts to restore the timer's pri
 remaining time, running state, and overlay visibility; a failed restoration is
 reported explicitly.
 
-The manager's `billing.xlsx` workbook has a `Sessions` worksheet with the visible
+Each device's `billing.xlsx` workbook has a `Sessions` worksheet with the visible
 columns `Date`, `Time`, `Customer`, `System`, `Players`, `Start Time`,
 `Purchased Minutes`, and `Amount Paid`. Date/time cells use Excel date/time values
 with `DD-MM-YYYY` and `HH:MM:SS` display formats. New sessions record the rate-card
 price as `Amount Paid` at start, per the operator's configured billing workflow.
 Session identifiers and fields needed by the API are stored in row comments rather
-than extra worksheet columns. Existing session and payment data is migrated after a
-workbook backup; payment history is retained in the associated session metadata.
+than extra worksheet columns. The reporting hub stores idempotent copies imported
+from registered PCs. Existing session and payment data is migrated after a workbook
+backup; payment history is retained in the associated session metadata.
+
+### Local PC ownership and synchronization
+
+Each gaming PC stores the authoritative session in its own `billing.xlsx`. New
+installations enable billing by default; existing configurations with
+`billing.enabled: false` must be changed to `true` on each PC and restarted.
+Every installation persists a stable ID in `billing_device_id.txt`; an optional
+`billing.device_id` override must be unique per physical PC and remain unchanged.
+The dashboard host is the reporting hub and must have the PCs registered with
+their management/UI ports (normally `18082`) reachable.
+
+The dashboard routes remote session starts and changes to the exact owning PC
+endpoint. A background pull runs every 30 seconds; the dashboard's **Sync PCs**
+button triggers it immediately. Source records remain on their PCs. The hub
+upserts snapshots by `(device_id, session_id)` and acknowledges only the matching
+`updated_at`, so a failed acknowledgement is safe to retry.
+
+| Method and path | Description |
+| --- | --- |
+| `POST /api/billing/sync` | Pull pending records from the hub's registered PCs. Returns per-device online, pending, error, and last-successful-sync state plus an overall `complete` flag. |
+| `GET /api/billing/report?date=YYYY-MM-DD` | Return synchronized session records, registered system count, session count, distinct named customer count, billed/collected/outstanding amounts, PC-wise totals, and device sync state for the requested date. |
+| `GET /internal/api/billing/sync/pending` | Peer API used by the hub to read a device's not-yet-acknowledged session snapshots. |
+| `POST /internal/api/billing/sync/ack` | Peer API used by the hub to acknowledge exact session IDs and update timestamps after its workbook write succeeds. |
+
+The report groups each session by its start date in `Asia/Kolkata`, including
+sessions that continue past midnight; a session is reported on its start date
+only. `session_count` counts session records. `unique_customer_count` counts
+non-empty customer names after trimming surrounding whitespace and comparing
+case-insensitively; it is not the session count. `billed_amount` sums each
+session's `final_amount`; `collected_amount` and the backwards-compatible
+`revenue` field sum recorded `amount_paid`; `outstanding` sums
+`max(final_amount - amount_paid, 0)`. PC totals expose the same billed,
+collected, and outstanding distinctions. Repeated synchronization upserts the
+same `(device_id, session_id)` and does not add another session to totals.
+
+The report is incomplete if any currently registered PC is offline, reports an
+error, or has pending records. The device table reports its last successful
+synchronization timestamp; previously synchronized history remains visible while
+a report is incomplete. Historical records remain in the hub workbook after a
+PC is removed from the current registry.
+
+The peer APIs are unauthenticated and unencrypted. Use only on a trusted private
+network and do not expose the management ports to the public internet.

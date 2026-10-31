@@ -20,6 +20,7 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+	"overlay-timer/internal/httpcheck"
 )
 
 const releaseURL = "https://api.github.com/repos/shubham2110/AI.FloatingTimer/releases/tags/latest"
@@ -158,7 +159,7 @@ func (u *updater) get(url string) (*http.Response, error) {
 	}
 	req.Header.Set("User-Agent", "FloatingTimerLauncher")
 	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := u.client.Do(req)
+	resp, err := httpcheck.Do(u.client, req, "launcher-release-check", "", log.Default())
 	if err != nil {
 		return nil, err
 	}
@@ -178,9 +179,12 @@ func (u *updater) check() error {
 	var release struct {
 		Assets []asset `json:"assets"`
 	}
-	err = json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&release)
+	data, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	resp.Body.Close()
-	if err != nil {
+	if readErr != nil {
+		return readErr
+	}
+	if err := httpcheck.DecodeJSON(data, resp.Header.Get("Content-Type"), &release); err != nil {
 		return err
 	}
 	var selected *asset

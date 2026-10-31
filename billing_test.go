@@ -23,6 +23,8 @@ func configureBillingTest(t *testing.T) string {
 	t.Helper()
 	directory := t.TempDir()
 	oldEnabled, oldPath, oldBackup := billingStore.enabled, billingStore.path, billingStore.backupDir
+	oldDeviceID, oldConfiguredID := billingStore.deviceID, billingStore.configuredID
+	oldSyncStatuses := billingStore.syncStatuses
 	oldClient := timerHTTP
 	billingSessionLinks.Lock()
 	oldLinks := billingSessionLinks.items
@@ -35,9 +37,14 @@ func configureBillingTest(t *testing.T) string {
 	billingStore.enabled = true
 	billingStore.path = filepath.Join(directory, "billing.xlsx")
 	billingStore.backupDir = filepath.Join(directory, "backups")
+	billingStore.deviceID = ""
+	billingStore.configuredID = ""
+	billingStore.syncStatuses = nil
 	timerHTTP = &http.Client{Timeout: 2 * time.Second}
 	t.Cleanup(func() {
 		billingStore.enabled, billingStore.path, billingStore.backupDir = oldEnabled, oldPath, oldBackup
+		billingStore.deviceID, billingStore.configuredID = oldDeviceID, oldConfiguredID
+		billingStore.syncStatuses = oldSyncStatuses
 		timerHTTP = oldClient
 		billingSessionLinks.Lock()
 		billingSessionLinks.items = oldLinks
@@ -216,12 +223,12 @@ func TestLegacyBillingWorkbookMigratesAndPreservesPaymentData(t *testing.T) {
 		t.Fatalf("expected only Sessions worksheet after migration, got %v", got)
 	}
 	for cell, want := range map[string]string{
-		"A2": sessionCreated.Format("02-01-2006"),
-		"B2": sessionCreated.Format("15:04:05"),
+		"A2": sessionStart.In(billingTimezone).Format("02-01-2006"),
+		"B2": sessionStart.In(billingTimezone).Format("15:04:05"),
 		"C2": legacy.CustomerName,
 		"D2": legacy.PCName,
 		"E2": "2",
-		"F2": sessionStart.Format("15:04:05"),
+		"F2": sessionStart.In(billingTimezone).Format("15:04:05"),
 		"G2": "45",
 		"H2": "₹10",
 	} {
@@ -272,6 +279,13 @@ func TestLegacyBillingWorkbookMigratesAndPreservesPaymentData(t *testing.T) {
 	}
 	if len(afterUpdate) != 1 || afterUpdate[0].AmountPaid != legacy.FinalAmount || len(afterUpdate[0].payments) != 2 {
 		t.Fatalf("session update duplicated/lost workbook state: %+v", afterUpdate)
+	}
+	if _, err := billingStore.update(legacy.ID, "pay", 0, 0); err == nil {
+		t.Fatal("duplicate full payment unexpectedly succeeded")
+	}
+	afterDuplicate, err := billingStore.sessions("", "")
+	if err != nil || len(afterDuplicate) != 1 || len(afterDuplicate[0].payments) != 2 {
+		t.Fatalf("duplicate full payment added another transaction: %+v, %v", afterDuplicate, err)
 	}
 }
 
@@ -360,6 +374,13 @@ func newBillingTimerServer(t *testing.T, failPlay bool) (*httptest.Server, *sync
 			state.IsRunning = false
 			state.TimerStatus = "paused"
 			mu.Unlock()
+		case "/1/reset":
+			mu.Lock()
+			state.RemainingSeconds = 0
+			state.IsRunning = false
+			state.TimerStatus = "paused"
+			state.TimeUpVisible = false
+			mu.Unlock()
 		case "/1/hide":
 			mu.Lock()
 			state.TimeUpVisible = false
@@ -373,6 +394,90 @@ func newBillingTimerServer(t *testing.T, failPlay bool) (*httptest.Server, *sync
 	t.Cleanup(server.Close)
 	timerHTTP = server.Client()
 	return server, &mu, &requests, state
+}
+
+func TestManualPriceOverridePersistsAndCloseStopsTimerIdempotently(t *testing.T) {
+	configureBillingTest(t)
+	server, mu, requests, state := newBillingTimerServer(t, false)
+	setBillingTestPCs(PC{ID: "host", Name: "Host", Address: server.URL + "/1"})
+	entry := pricingCatalog().Entries[0]
+	mux := http.NewServeMux()
+	registerBillingHandlers(mux)
+	body := fmt.Sprintf(`{"pc_id":"host","category":%q,"customer_name":"Override Customer","players":%d,"duration_minutes":%d,"manual_price":123}`, entry.Category, entry.Players, entry.DurationMinutes)
+	start := httptest.NewRecorder()
+	mux.ServeHTTP(start, httptest.NewRequest(http.MethodPost, "/api/sessions", strings.NewReader(body)))
+	if start.Code != http.StatusCreated {
+		t.Fatalf("start returned %d: %s", start.Code, start.Body.String())
+	}
+	var session Session
+	if err := json.Unmarshal(start.Body.Bytes(), &session); err != nil {
+		t.Fatal(err)
+	}
+	if session.FinalAmount != 123 || session.EstimatedAmount != entry.Amount || session.ManualPrice == nil || *session.ManualPrice != 123 {
+		t.Fatalf("manual override or catalog snapshot was not preserved: %+v", session)
+	}
+	closed := httptest.NewRecorder()
+	mux.ServeHTTP(closed, httptest.NewRequest(http.MethodPost, "/api/sessions/"+session.ID+"/close", strings.NewReader(`{}`)))
+	if closed.Code != http.StatusOK {
+		t.Fatalf("close returned %d: %s", closed.Code, closed.Body.String())
+	}
+	if err := json.Unmarshal(closed.Body.Bytes(), &session); err != nil {
+		t.Fatal(err)
+	}
+	if session.Status != "closed" || session.EndedAt == "" || session.ActualDurationSeconds < 0 || session.FinalAmount != 123 {
+		t.Fatalf("closed record is incomplete: %+v", session)
+	}
+	mu.Lock()
+	if state.RemainingSeconds != 0 || state.IsRunning {
+		t.Errorf("timer was not stopped: %+v", state)
+	}
+	requestCount := len(*requests)
+	mu.Unlock()
+	duplicate := httptest.NewRecorder()
+	mux.ServeHTTP(duplicate, httptest.NewRequest(http.MethodPost, "/api/sessions/"+session.ID+"/close", strings.NewReader(`{}`)))
+	if duplicate.Code != http.StatusConflict {
+		t.Fatalf("duplicate close returned %d; want 409", duplicate.Code)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(*requests) != requestCount {
+		t.Errorf("duplicate close touched the timer: %v", *requests)
+	}
+	for _, price := range []string{"-1", `"bad"`, "1.25"} {
+		invalidBody := fmt.Sprintf(`{"pc_id":"host","category":%q,"customer_name":"Invalid Price","players":%d,"duration_minutes":%d,"manual_price":%s}`, entry.Category, entry.Players, entry.DurationMinutes, price)
+		invalid := httptest.NewRecorder()
+		mux.ServeHTTP(invalid, httptest.NewRequest(http.MethodPost, "/api/sessions", strings.NewReader(invalidBody)))
+		if invalid.Code != http.StatusBadRequest {
+			t.Errorf("manual price %s returned %d; want 400: %s", price, invalid.Code, invalid.Body.String())
+		}
+	}
+}
+
+func TestCloseWorkbookFailureRestoresTimerAndKeepsSessionOpen(t *testing.T) {
+	configureBillingTest(t)
+	server, mu, _, state := newBillingTimerServer(t, false)
+	setBillingTestPCs(PC{ID: "host", Name: "Host", Address: server.URL + "/1"})
+	entry := pricingCatalog().Entries[0]
+	started, err := startBillingSession(StartSessionRequest{PCID: "host", Category: entry.Category, CustomerName: "Write Failure", Players: entry.Players, DurationMinutes: entry.DurationMinutes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalPath := billingStore.path
+	billingStore.path = filepath.Dir(originalPath) // Existing directory cannot be opened as an XLSX workbook.
+	_, err = closeOwnedSession(started.ID, started, PC{ID: "host", Name: "Host", Address: server.URL + "/1"})
+	if err == nil {
+		t.Fatal("close unexpectedly succeeded with an invalid workbook path")
+	}
+	billingStore.path = originalPath
+	stored, err := billingStore.sessionByID(started.ID)
+	if err != nil || stored.Status != "open" {
+		t.Fatalf("failed close changed persisted session: %+v, %v", stored, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if state.RemainingSeconds != entry.DurationMinutes*60 || !state.IsRunning {
+		t.Fatalf("failed close did not restore the prior timer state: %+v", state)
+	}
 }
 
 func TestSessionStartAPIStartsOnlySelectedSharedHostTimer(t *testing.T) {

@@ -49,14 +49,18 @@ func startManagementService(listener net.Listener) {
 	}
 	defer billingStore.close()
 	observeLocalTimers()
+	if appConfig.Billing.Enabled {
+		startBillingSyncScheduler()
+	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("/api/health", healthHandler)
 	mux.HandleFunc("/", servePage)
 	mux.HandleFunc("/api/pcs", pcsHandler)
 	mux.HandleFunc("/api/pcs/", pcHandler)
 	registerDiscoveryHandlers(mux)
 	registerBillingHandlers(mux)
 	server := &http.Server{
-		Addr: fmt.Sprintf(":%d", appConfig.UIDiscoveryPort), Handler: cors(headers(mux)),
+		Addr: fmt.Sprintf(":%d", appConfig.UIDiscoveryPort), Handler: requestLogMiddleware(cors(headers(mux))),
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 20 * time.Second,
 		WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,
 	}
@@ -141,6 +145,9 @@ func servePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
 	_, _ = io.WriteString(w, pageHTML)
 }
 

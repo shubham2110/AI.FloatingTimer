@@ -38,6 +38,7 @@ import (
 	"time"
 	"unsafe"
 
+	"overlay-timer/internal/httpcheck"
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/canvas"
@@ -159,7 +160,7 @@ func defaultAppConfig() AppConfig {
 		ForceKillAfterSeconds: 2,
 		TimerPort:             DefaultTimerPort,
 		UIDiscoveryPort:       DefaultUIPort,
-		Billing:               BillingConfig{Enabled: false},
+		Billing:               BillingConfig{Enabled: true},
 		SpecialCommands:       []SpecialCommandConfig{},
 		CommandTimeoutSeconds: 10,
 		Discovery: DiscoveryConfig{
@@ -787,7 +788,7 @@ func startBackgroundAPI(listener net.Listener) {
 		writeJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "drag_enabled": *request.Enabled})
 	})
 
-	err := http.Serve(listener, cors(http.DefaultServeMux))
+	err := http.Serve(listener, requestLogMiddleware(cors(http.DefaultServeMux)))
 	logf("http", "Serve RETURNED (server stopped): %v", err)
 }
 
@@ -931,7 +932,7 @@ func notifyManagerExtension(seconds int) (bool, int, error) {
 			return false, 0, err
 		}
 		req.Header.Set("Content-Type", "application/json")
-		resp, err := timerHTTP.Do(req)
+		resp, err := monitoredHTTPDo(req, "billing-session-extension", localPC.ID)
 		if err != nil {
 			return false, 0, fmt.Errorf("billing synchronization could not be confirmed: %w", err)
 		}
@@ -948,7 +949,7 @@ func notifyManagerExtension(seconds int) (bool, int, error) {
 			return false, 0, fmt.Errorf("billing service returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(responseError.Error))
 		}
 		var result ExtendSessionResponse
-		if err := json.Unmarshal(body, &result); err != nil {
+		if err := httpcheck.DecodeJSON(body, resp.Header.Get("Content-Type"), &result); err != nil {
 			return false, 0, fmt.Errorf("invalid billing response: %w", err)
 		}
 		return result.SessionFound, result.RemainingSeconds, nil
@@ -972,7 +973,7 @@ func notifyManagerExtension(seconds int) (bool, int, error) {
 				continue
 			}
 			req.Header.Set("Content-Type", "application/json")
-			resp, err := timerHTTP.Do(req)
+			resp, err := monitoredHTTPDo(req, "billing-session-extension-forward", peer.ID)
 			if err != nil {
 				failures = append(failures, fmt.Sprintf("%s: %v", peer.Name, err))
 				continue
