@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"overlay-timer/internal/httpcheck"
 )
 
 type NodeIdentity struct {
@@ -42,8 +44,6 @@ func localNodeIdentity() NodeIdentity {
 	return identity
 }
 
-// The complete timer URL is the registry key, including a virtual timer's ID.
-// Legacy identities without a manifest still describe the host's own timer.
 func identityPCs(address string, identity NodeIdentity) []PC {
 	pcs := []PC{{ID: stablePCID(address), Name: identity.Name, Address: address, UIPort: identity.UIPort}}
 	seen := map[string]bool{"": true}
@@ -269,7 +269,7 @@ func uiNodeReachable(host string, port int) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(appConfig.Discovery.ConnectTimeoutMilliseconds)*time.Millisecond)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://%s:%d/api/node", host, port), nil)
-	response, err := timerHTTP.Do(req)
+	response, err := monitoredHTTPDo(req, "discovery-node", "")
 	if err != nil {
 		return false
 	}
@@ -373,13 +373,17 @@ func probeTimer(host string) ([]PC, bool) {
 	defer cancel()
 	address := fmt.Sprintf("http://%s:%d", host, appConfig.TimerPort)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, address+"/identity", nil)
-	response, err := timerHTTP.Do(req)
+	response, err := monitoredHTTPDo(req, "discovery-identity", "")
 	if err != nil {
 		return nil, false
 	}
 	defer response.Body.Close()
 	var identity NodeIdentity
-	if response.StatusCode != 200 || json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&identity) != nil || identity.Service != "overlay-timer" || identity.TimerPort < 0 || identity.TimerPort > 65535 || identity.UIPort < 0 || identity.UIPort > 65535 {
+	body, readErr := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if response.StatusCode != http.StatusOK || readErr != nil ||
+		httpcheck.DecodeJSON(body, response.Header.Get("Content-Type"), &identity) != nil ||
+		identity.Service != "overlay-timer" || identity.TimerPort < 0 ||
+		identity.TimerPort > 65535 || identity.UIPort < 0 || identity.UIPort > 65535 {
 		return nil, false
 	}
 	if identity.TimerPort > 0 {
@@ -406,13 +410,20 @@ func peerEndpoint(pc PC) string {
 func pullPeersFromPC(pc PC) { pullPeersURL(peerEndpoint(pc)) }
 
 func pullPeersURL(endpoint string) {
-	response, err := timerHTTP.Get(endpoint)
+	request, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		logf("discovery", "could not create peer-list request: %v", err)
+		return
+	}
+	response, err := monitoredHTTPDo(request, "discovery-peer-list", "")
 	if err != nil {
 		return
 	}
 	defer response.Body.Close()
 	var peers []PC
-	if response.StatusCode == 200 && json.NewDecoder(response.Body).Decode(&peers) == nil {
+	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if response.StatusCode == http.StatusOK && err == nil &&
+		httpcheck.DecodeJSON(body, response.Header.Get("Content-Type"), &peers) == nil {
 		if _, err := store.merge(peers); err != nil {
 			logf("registry", "peer merge failed: %v", err)
 		}

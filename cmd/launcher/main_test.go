@@ -106,7 +106,13 @@ func TestDownloadInstallAndUnchanged(t *testing.T) {
 		} else if r.URL.String() != "https://example.test/release" {
 			t.Fatalf("unexpected asset request: %s", r.URL)
 		}
-		return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(data)), Header: make(http.Header)}, nil
+		headers := make(http.Header)
+		if r.URL.String() == a.URL {
+			headers.Set("Content-Type", "application/octet-stream")
+		} else {
+			headers.Set("Content-Type", "application/vnd.github+json")
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(data)), Header: headers}, nil
 	})}}
 	if err := u.check(); err != nil {
 		t.Fatal(err)
@@ -221,7 +227,13 @@ func TestBadDownloadDoesNotBecomePending(t *testing.T) {
 						status = 503
 					}
 				}
-				return &http.Response{StatusCode: status, Body: io.NopCloser(bytes.NewReader(data)), Header: make(http.Header)}, nil
+				headers := make(http.Header)
+				if r.URL.String() == a.URL {
+					headers.Set("Content-Type", "application/octet-stream")
+				} else {
+					headers.Set("Content-Type", "application/vnd.github+json")
+				}
+				return &http.Response{StatusCode: status, Body: io.NopCloser(bytes.NewReader(data)), Header: headers}, nil
 			})}}
 			if err := u.check(); err == nil {
 				t.Fatal("accepted bad release")

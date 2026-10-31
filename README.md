@@ -49,7 +49,7 @@ The timer exposes an HTTP API on port `18081` by default (`timer_port` in config
 
 The management UI obtains saved PC addresses from its own backend, then calls each active timer directly from the browser. Timer endpoints allow cross-origin requests with `Access-Control-Allow-Origin: *` and handle OPTIONS preflight requests.
 
-> **Security:** The API currently has no authentication or encryption. Restrict both ports to trusted networks or place the timer behind an authenticated HTTPS proxy.
+> **Access:** Both ports listen on all network interfaces, and the API (including billing and workbook download endpoints) has no authentication or encryption. No admin token or login is required. Other devices can connect using this PC's IP address and the configured ports, subject to Windows Firewall and network rules. Anyone who can reach the ports may control timers and read or change billing data; do not expose them directly to the public internet.
 
 ## Common request and response format
 
@@ -834,3 +834,56 @@ metadata and survives edits, imports, and restarts. Failed saves roll back memor
 Discovery still probes the configured timer port; differently configured remote timer
 ports need manual registration or an existing peer record. A discovery observation
 older than 15 minutes is marked stale, without deleting the record.
+
+### Local-first billing and consolidated daily reports
+
+Billing data is owned by the PC that runs the session. Each gaming PC keeps its
+own persistent `billing.xlsx` beside its executable, even after its records have
+been synchronized. The device also keeps a stable ID in `billing_device_id.txt`;
+do not copy this file to another PC. If you configure `billing.device_id`
+explicitly, use a different value on every physical PC and do not change it after
+the device has recorded sessions.
+
+Billing must be enabled on every gaming PC. New configurations enable it by
+default. For an existing `overlay_timer_config.json` that explicitly disables
+billing, set `"enabled": true` in its `"billing"` object and restart that PC's
+application. A manager cannot create or update a remote session record if the
+owning PC's billing store is disabled or unavailable.
+
+The dashboard host acts as the reporting hub. Register all gaming PCs in that
+dashboard's saved system list and keep each PC's management/UI port reachable
+(normally `18082`). Starting, extending, paying, or closing a remote session
+routes the change to the owning PC first; the dashboard then saves the returned
+session snapshot. Each dashboard hub also pulls pending records from registered
+PCs every 30 seconds. Use **Sync PCs** in **Consolidated daily billing** to run
+the same sync immediately. Sync uses the stable device ID plus session ID and
+the session update timestamp, so retries update the same central workbook row
+instead of duplicating it. The originating PC retains its records after success.
+
+The report groups each session by its actual start date in `Asia/Kolkata`; a
+session crossing midnight belongs to its start date only. It reports session
+count separately from unique named customers (trimmed names compared
+case-insensitively), and shows total billed (`final_amount`), collected
+(`amount_paid`), and outstanding (`max(final_amount - amount_paid, 0)`) amounts
+separately. Offline PCs, failed syncs, or unacknowledged records make the report
+explicitly incomplete. Previously synchronized records remain visible, but do
+not treat the totals as verified final figures until every listed device is
+online and synchronized. Sync health is persisted in
+`billing-sync-status.json` beside the hub workbook.
+
+Each session is committed to the owning PC's workbook before a successful local
+start is returned; creating that local record does not require the reporting hub
+or a network connection. The workbook remains the durable source on that PC
+across browser closure and application/computer restarts. Sync only copies and
+acknowledges version-matched snapshots; it never deletes the source session.
+Workbook updates write a temporary file and replace the active workbook only
+after saving succeeds, keeping a timestamped pre-write copy in
+`billing-backups`. Existing legacy session/payment sheets are migrated only
+after that backup succeeds; if migration validation or saving fails, the
+original workbook remains available for recovery. Keep the workbook, ID file,
+and backup directory together when moving an installation, and back them up
+before manually changing or relocating billing data.
+
+These peer APIs have no authentication or encryption, like the rest of the
+application. Keep all PCs and the reporting hub on a trusted private network;
+do not forward their ports to the public internet.

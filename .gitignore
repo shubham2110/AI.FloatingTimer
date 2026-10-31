@@ -5,13 +5,14 @@
 /bin/
 /build/
 /dist/
-
+/billing-backups
 # Runtime logs and machine-specific data (including on-behalf timer folders)
 *.log
 logs/
 overlay_timer_config.json
 overlay_ui_pcs.json
 overlay_ui_activity.csv
+billing-sync-status.json
 
 # Test coverage and profiling output
 coverage*.out

@@ -1,0 +1,2281 @@
+//go:build windows
+
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/xuri/excelize/v2"
+	"overlay-timer/internal/httpcheck"
+)
+
+const (
+	billingWorkbookName  = "billing.xlsx"
+	billingDeviceIDName  = "billing_device_id.txt"
+	billingSyncStateName = "billing-sync-status.json"
+	billingSyncInterval  = 30 * time.Second
+	billingTimezoneName  = "Asia/Kolkata"
+)
+
+var billingTimezone = time.FixedZone(billingTimezoneName, 5*60*60+30*60)
+
+type BillingConfig struct {
+	Enabled         bool   `json:"enabled"`
+	WorkbookPath    string `json:"workbook_path"`
+	BackupDirectory string `json:"backup_directory"`
+	DeviceID        string `json:"device_id,omitempty"`
+}
+type Session struct {
+	ID                    string `json:"id"`
+	DeviceID              string `json:"device_id,omitempty"`
+	SyncedUpdatedAt       string `json:"sync_updated_at,omitempty"`
+	PCID                  string `json:"pc_id"`
+	PCName                string `json:"pc_name"`
+	PCAddress             string `json:"pc_address"`
+	Category              string `json:"category"`
+	CustomerName          string `json:"customer_name"`
+	Players               int    `json:"players"`
+	Status                string `json:"status"`
+	StartedAt             string `json:"started_at"`
+	ExpectedEndAt         string `json:"expected_end_at"`
+	EndedAt               string `json:"ended_at,omitempty"`
+	PurchasedMinutes      int    `json:"purchased_minutes"`
+	AdditionalMinutes     int    `json:"additional_minutes"`
+	ActualDurationSeconds int    `json:"actual_duration_seconds"`
+	PricingSnapshot       string `json:"pricing_snapshot"`
+	ManualPrice           *int   `json:"manual_price,omitempty"`
+	EstimatedAmount       int    `json:"estimated_amount"`
+	FinalAmount           int    `json:"final_amount"`
+	AmountPaid            int    `json:"amount_paid"`
+	PaymentStatus         string `json:"payment_status"`
+	PaymentAt             string `json:"payment_at,omitempty"`
+	CreatedAt             string `json:"created_at"`
+	UpdatedAt             string `json:"updated_at"`
+	payments              []paymentRecord
+}
+type billingSessionLink struct {
+	SessionID       string `json:"session_id"`
+	PCAddress       string `json:"pc_address"`
+	ManagerEndpoint string `json:"manager_endpoint"`
+}
+type paymentRecord struct {
+	ID               string `json:"id"`
+	Timestamp        string `json:"timestamp"`
+	Amount           int    `json:"amount"`
+	Status           string `json:"status"`
+	ExtensionMinutes int    `json:"extension_minutes,omitempty"`
+	RemainingSeconds int    `json:"remaining_seconds,omitempty"`
+}
+
+var billingSessionLinks = struct {
+	sync.RWMutex
+	items map[string]billingSessionLink
+}{items: make(map[string]billingSessionLink)}
+
+func billingSessionLinkForEndpoint(address string) (billingSessionLink, bool) {
+	billingSessionLinks.RLock()
+	defer billingSessionLinks.RUnlock()
+	link, ok := billingSessionLinks.items[normalizeSessionAddress(address)]
+	return link, ok
+}
+
+func billingManagerEndpoint() (string, error) {
+	manager := localRegistryPC()
+	endpoint, err := url.Parse(manager.Address)
+	if err != nil {
+		return "", err
+	}
+	if endpoint.Hostname() == "" || appConfig.UIDiscoveryPort < 1 {
+		return "", errors.New("billing manager endpoint is not configured")
+	}
+	return "http://" + net.JoinHostPort(endpoint.Hostname(), strconv.Itoa(appConfig.UIDiscoveryPort)) + "/internal/api/sessions/extend", nil
+}
+
+func setBillingSessionLinkHandler(mux *http.ServeMux, path, pcAddress string) {
+	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST or DELETE required"})
+			return
+		}
+		var link billingSessionLink
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&link); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid billing session link"})
+			return
+		}
+		key := normalizeSessionAddress(pcAddress)
+		if normalizeSessionAddress(link.PCAddress) != key || key == "" || link.SessionID == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "billing session link does not match this timer endpoint"})
+			return
+		}
+		endpoint, err := url.Parse(link.ManagerEndpoint)
+		if err != nil || (endpoint.Scheme != "http" && endpoint.Scheme != "https") ||
+			endpoint.Host == "" || endpoint.User != nil || endpoint.Path != "/internal/api/sessions/extend" ||
+			endpoint.RawQuery != "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid billing manager endpoint"})
+			return
+		}
+		if r.Method == http.MethodPost {
+			billingSessionLinks.Lock()
+			billingSessionLinks.items[key] = link
+			billingSessionLinks.Unlock()
+		} else {
+			billingSessionLinks.Lock()
+			if current, exists := billingSessionLinks.items[key]; exists && current.SessionID == link.SessionID {
+				delete(billingSessionLinks.items, key)
+			}
+			billingSessionLinks.Unlock()
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "success"})
+	})
+}
+
+func updateBillingSessionLink(pc PC, sessionID string, remove bool) error {
+	managerEndpoint, err := billingManagerEndpoint()
+	if err != nil {
+		return fmt.Errorf("could not resolve billing manager endpoint: %w", err)
+	}
+	link := billingSessionLink{SessionID: sessionID, PCAddress: pc.Address, ManagerEndpoint: managerEndpoint}
+	payload, err := json.Marshal(link)
+	if err != nil {
+		return err
+	}
+	method := http.MethodPost
+	if remove {
+		method = http.MethodDelete
+	}
+	request, err := http.NewRequest(method, timerEndpoint(pc.Address, "billing-session"), bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := monitoredHTTPDo(request, "billing-session-link", pc.ID)
+	if err != nil {
+		return fmt.Errorf("could not configure billing synchronization on %s: %w", pc.Name, err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+	if err != nil {
+		return err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("timer endpoint returned HTTP %d while configuring billing synchronization: %s", response.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
+type sessionMetadata struct {
+	Version  int             `json:"version"`
+	Session  Session         `json:"session"`
+	Payments []paymentRecord `json:"payments,omitempty"`
+}
+type BillingSummary struct {
+	Enabled             bool   `json:"enabled"`
+	TodayCollected      int    `json:"today_collected"`
+	OpenSessions        int    `json:"open_sessions"`
+	ConfigurationStatus string `json:"configuration_status"`
+}
+type BillingSyncExport struct {
+	DeviceID string    `json:"device_id"`
+	Name     string    `json:"name"`
+	Sessions []Session `json:"sessions"`
+}
+type BillingSyncAck struct {
+	DeviceID string                 `json:"device_id"`
+	Sessions []BillingSyncAckRecord `json:"sessions"`
+}
+type BillingSyncAckRecord struct {
+	ID        string `json:"id"`
+	UpdatedAt string `json:"updated_at"`
+}
+type BillingSyncAckResult struct {
+	Acknowledged int `json:"acknowledged"`
+}
+type BillingDeviceStatus struct {
+	DeviceID         string `json:"device_id"`
+	Name             string `json:"name"`
+	Endpoint         string `json:"endpoint"`
+	Online           bool   `json:"online"`
+	PendingRecords   int    `json:"pending_records"`
+	LastAttemptAt    string `json:"last_attempt_at,omitempty"`
+	LastSuccessfulAt string `json:"last_successful_sync_at,omitempty"`
+	Error            string `json:"error,omitempty"`
+}
+type BillingReport struct {
+	Date                string                `json:"date"`
+	Timezone            string                `json:"timezone"`
+	Complete            bool                  `json:"complete"`
+	SystemCount         int                   `json:"system_count"`
+	SessionCount        int                   `json:"session_count"`
+	UniqueCustomerCount int                   `json:"unique_customer_count"`
+	CustomerCount       int                   `json:"customer_count"`
+	BilledAmount        int                   `json:"billed_amount"`
+	CollectedAmount     int                   `json:"collected_amount"`
+	Revenue             int                   `json:"revenue"`
+	Outstanding         int                   `json:"outstanding"`
+	PCs                 []BillingReportPC     `json:"pcs"`
+	Records             []Session             `json:"records"`
+	Devices             []BillingDeviceStatus `json:"devices"`
+}
+type BillingReportPC struct {
+	DeviceID        string `json:"device_id,omitempty"`
+	PCID            string `json:"pc_id"`
+	PCName          string `json:"pc_name"`
+	SessionCount    int    `json:"session_count"`
+	CustomerCount   int    `json:"customer_count"`
+	BilledAmount    int    `json:"billed_amount"`
+	CollectedAmount int    `json:"collected_amount"`
+	Revenue         int    `json:"revenue"`
+	Outstanding     int    `json:"outstanding"`
+}
+type StartSessionRequest struct {
+	PCID            string `json:"pc_id"`
+	Category        string `json:"category"`
+	CustomerName    string `json:"customer_name"`
+	Players         int    `json:"players"`
+	DurationMinutes int    `json:"duration_minutes"`
+	StartedAt       string `json:"started_at"`
+	ManualPrice     *int   `json:"manual_price,omitempty"`
+}
+type BillingStore struct {
+	mu              sync.Mutex
+	enabled         bool
+	path, backupDir string
+	deviceID        string
+	configuredID    string
+	syncStatuses    []BillingDeviceStatus
+}
+
+var billingStore BillingStore
+var sessionHeaders = []string{"Date", "Time", "Customer", "System", "Players", "Start Time", "Purchased Minutes", "Amount Paid"}
+var legacySessionHeaders = []string{"Session ID", "System ID", "System", "Address", "Category", "Customer", "Players", "Status", "Start", "Expected End", "End", "Purchased Minutes", "Additional Minutes", "Pricing Snapshot", "Estimated Amount", "Final Amount", "Amount Paid", "Payment Status", "Payment At", "Created At", "Updated At"}
+var paymentHeaders = []string{"Payment ID", "Session ID", "Timestamp", "Amount", "Payment Status"}
+
+func normalizeBillingConfig() {
+	appConfig.Billing.WorkbookPath = strings.TrimSpace(appConfig.Billing.WorkbookPath)
+	appConfig.Billing.BackupDirectory = strings.TrimSpace(appConfig.Billing.BackupDirectory)
+	if appConfig.Billing.WorkbookPath != "" && !filepath.IsAbs(appConfig.Billing.WorkbookPath) {
+		appConfig.Billing.WorkbookPath = appDataPath(appConfig.Billing.WorkbookPath)
+	}
+	if appConfig.Billing.BackupDirectory != "" && !filepath.IsAbs(appConfig.Billing.BackupDirectory) {
+		appConfig.Billing.BackupDirectory = appDataPath(appConfig.Billing.BackupDirectory)
+	}
+}
+func (s *BillingStore) open(c BillingConfig) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.enabled = c.Enabled
+	if !c.Enabled {
+		return nil
+	}
+	s.path = c.WorkbookPath
+	if s.path == "" {
+		s.path = appDataPath(billingWorkbookName)
+	}
+	s.backupDir = c.BackupDirectory
+	if s.backupDir == "" {
+		s.backupDir = filepath.Join(filepath.Dir(s.path), "billing-backups")
+	}
+	s.configuredID = strings.TrimSpace(c.DeviceID)
+	if len(s.configuredID) > 128 {
+		return errors.New("billing device_id must be at most 128 characters")
+	}
+	if err := os.MkdirAll(filepath.Dir(s.path), 0755); err != nil {
+		return err
+	}
+	if err := s.ensureDeviceIDLocked(); err != nil {
+		return err
+	}
+	if err := s.loadSyncStatusesLocked(); err != nil {
+		return err
+	}
+	f, err := s.openLocked()
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
+func (s *BillingStore) close() {}
+func (s *BillingStore) openLocked() (*excelize.File, error) {
+	if err := s.ensureDeviceIDLocked(); err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(s.path); errors.Is(err, os.ErrNotExist) {
+		f := excelize.NewFile()
+		f.SetSheetName("Sheet1", "Sessions")
+		if err := writeRow(f, "Sessions", 1, sessionHeaders); err != nil {
+			return nil, err
+		}
+		if err := formatSessionsSheet(f, "Sessions", 1); err != nil {
+			return nil, err
+		}
+		if err := s.saveLocked(f); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+		return f, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("cannot access billing workbook: %w", err)
+	}
+	f, err := excelize.OpenFile(s.path)
+	if err != nil {
+		return nil, fmt.Errorf("cannot open billing workbook; it may be locked or corrupt: %w", err)
+	}
+	if err := s.ensureSessionSchemaLocked(f); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return f, nil
+}
+
+func (s *BillingStore) ensureSessionSchemaLocked(f *excelize.File) error {
+	index, err := f.GetSheetIndex("Sessions")
+	if err != nil {
+		return err
+	}
+	if index == -1 {
+		index, err = f.NewSheet("Sessions")
+		if err != nil {
+			return err
+		}
+		if index == -1 {
+			return errors.New("could not create Sessions worksheet")
+		}
+		if err := writeRow(f, "Sessions", 1, sessionHeaders); err != nil {
+			return err
+		}
+		if err := formatSessionsSheet(f, "Sessions", 1); err != nil {
+			return err
+		}
+		return s.saveLocked(f)
+	}
+
+	rows, err := f.GetRows("Sessions")
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		if err := writeRow(f, "Sessions", 1, sessionHeaders); err != nil {
+			return err
+		}
+		if err := formatSessionsSheet(f, "Sessions", 1); err != nil {
+			return err
+		}
+		return s.saveLocked(f)
+	}
+	switch {
+	case equalStrings(rows[0], sessionHeaders):
+		return nil
+	case equalStrings(rows[0], legacySessionHeaders):
+		return s.migrateLegacyWorkbookLocked(f, rows)
+	default:
+		return fmt.Errorf("billing workbook has an unsupported Sessions header; no data was changed")
+	}
+}
+
+func (s *BillingStore) migrateLegacyWorkbookLocked(f *excelize.File, rows [][]string) error {
+	sessions := make([]Session, 0, len(rows)-1)
+	byID := make(map[string]int, len(rows)-1)
+	for rowIndex, row := range rows[1:] {
+		x := parseSession(row)
+		if x.ID == "" {
+			if strings.Join(row, "") != "" {
+				return fmt.Errorf("legacy billing row %d has no session ID; workbook was not changed", rowIndex+2)
+			}
+			continue
+		}
+		if _, exists := byID[x.ID]; exists {
+			return fmt.Errorf("legacy billing workbook contains duplicate session ID %q; workbook was not changed", x.ID)
+		}
+		byID[x.ID] = len(sessions)
+		sessions = append(sessions, x)
+	}
+
+	if paymentIndex, err := f.GetSheetIndex("Payments"); err != nil {
+		return err
+	} else if paymentIndex != -1 {
+		paymentRows, err := f.GetRows("Payments")
+		if err != nil {
+			return err
+		}
+		if len(paymentRows) > 0 && !equalStrings(paymentRows[0], paymentHeaders) {
+			return errors.New("legacy billing workbook has an unsupported Payments header; workbook was not changed")
+		}
+		for rowIndex, row := range paymentRows[1:] {
+			get := func(i int) string {
+				if i < len(row) {
+					return row[i]
+				}
+				return ""
+			}
+			sessionIndex, exists := byID[get(1)]
+			if !exists {
+				if strings.Join(row, "") == "" {
+					continue
+				}
+				return fmt.Errorf("legacy payment row %d has no matching session; workbook was not changed", rowIndex+2)
+			}
+			amount, err := strconv.Atoi(get(3))
+			if err != nil {
+				return fmt.Errorf("legacy payment row %d has an invalid amount; workbook was not changed", rowIndex+2)
+			}
+			sessions[sessionIndex].payments = append(sessions[sessionIndex].payments, paymentRecord{
+				ID: get(0), Timestamp: get(2), Amount: amount, Status: get(4),
+			})
+		}
+	}
+
+	const replacementSheet = "_BillingSessions"
+	if index, err := f.GetSheetIndex(replacementSheet); err != nil {
+		return err
+	} else if index != -1 {
+		return errors.New("billing workbook contains a reserved migration worksheet; workbook was not changed")
+	}
+	if _, err := f.NewSheet(replacementSheet); err != nil {
+		return fmt.Errorf("could not create replacement Sessions worksheet: %w", err)
+	}
+	if err := writeRow(f, replacementSheet, 1, sessionHeaders); err != nil {
+		return err
+	}
+	if err := formatSessionsSheet(f, replacementSheet, len(sessions)+1); err != nil {
+		return err
+	}
+	for i, session := range sessions {
+		if err := writeSessionRow(f, replacementSheet, i+2, session, false); err != nil {
+			return fmt.Errorf("could not migrate legacy session %q: %w", session.ID, err)
+		}
+	}
+	if err := f.DeleteSheet("Sessions"); err != nil {
+		return fmt.Errorf("could not replace legacy Sessions worksheet: %w", err)
+	}
+	if err := f.SetSheetName(replacementSheet, "Sessions"); err != nil {
+		return err
+	}
+	for _, sheet := range []string{"Payments", "Daily Summary"} {
+		index, err := f.GetSheetIndex(sheet)
+		if err != nil {
+			return err
+		}
+		if index != -1 {
+			if err := f.DeleteSheet(sheet); err != nil {
+				return fmt.Errorf("could not remove migrated %s worksheet: %w", sheet, err)
+			}
+		}
+	}
+	index, err := f.GetSheetIndex("Sessions")
+	if err != nil {
+		return err
+	}
+	f.SetActiveSheet(index)
+	if err := s.saveLocked(f); err != nil {
+		return fmt.Errorf("could not save migrated billing workbook: %w", err)
+	}
+	return nil
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func formatSessionsSheet(f *excelize.File, sheet string, rows int) error {
+	header, err := f.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Bold: true, Color: "FFFFFF"},
+		Fill:      excelize.Fill{Type: "pattern", Color: []string{"20344A"}, Pattern: 1},
+		Alignment: &excelize.Alignment{Vertical: "center"},
+	})
+	if err != nil {
+		return err
+	}
+	if err := f.SetCellStyle(sheet, "A1", "H1", header); err != nil {
+		return err
+	}
+	widths := []float64{14, 12, 24, 22, 10, 14, 20, 16}
+	for i, width := range widths {
+		if err := f.SetColWidth(sheet, column(i+1), column(i+1), width); err != nil {
+			return err
+		}
+	}
+	if rows > 1 {
+		return formatSessionDataRows(f, sheet, 2, rows)
+	}
+	return nil
+}
+
+func formatSessionDataRows(f *excelize.File, sheet string, firstRow, lastRow int) error {
+	dateFormat := "dd-mm-yyyy"
+	timeFormat := "hh:mm:ss"
+	amountFormat := `"₹"#,##0`
+	dateStyle, err := f.NewStyle(&excelize.Style{CustomNumFmt: &dateFormat, Alignment: &excelize.Alignment{Horizontal: "center"}})
+	if err != nil {
+		return err
+	}
+	timeStyle, err := f.NewStyle(&excelize.Style{CustomNumFmt: &timeFormat, Alignment: &excelize.Alignment{Horizontal: "center"}})
+	if err != nil {
+		return err
+	}
+	amountStyle, err := f.NewStyle(&excelize.Style{CustomNumFmt: &amountFormat, Alignment: &excelize.Alignment{Horizontal: "right"}})
+	if err != nil {
+		return err
+	}
+	first, last := strconv.Itoa(firstRow), strconv.Itoa(lastRow)
+	for _, item := range []struct {
+		start, end string
+		style      int
+	}{
+		{"A" + first, "A" + last, dateStyle},
+		{"B" + first, "B" + last, timeStyle},
+		{"F" + first, "F" + last, timeStyle},
+		{"H" + first, "H" + last, amountStyle},
+	} {
+		if err := f.SetCellStyle(sheet, item.start, item.end, item.style); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeRow(f *excelize.File, sheet string, row int, values []string) error {
+	for i, v := range values {
+		if err := f.SetCellValue(sheet, fmt.Sprintf("%s%d", column(i+1), row), v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+func column(n int) string {
+	v := ""
+	for n > 0 {
+		n--
+		v = string(rune('A'+n%26)) + v
+		n /= 26
+	}
+	return v
+}
+func (s *BillingStore) saveLocked(f *excelize.File) error {
+	if err := os.MkdirAll(s.backupDir, 0755); err != nil {
+		return err
+	}
+	if _, err := os.Stat(s.path); err == nil {
+		b := filepath.Join(s.backupDir, "billing-"+time.Now().Format("20060102-150405.000000000")+".xlsx")
+		source, err := os.Open(s.path)
+		if err != nil {
+			return fmt.Errorf("could not open workbook for backup: %w", err)
+		}
+		backup, err := os.OpenFile(b, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if err != nil {
+			_ = source.Close()
+			return fmt.Errorf("could not create workbook backup: %w", err)
+		}
+		_, copyErr := io.Copy(backup, source)
+		sourceCloseErr := source.Close()
+		backupCloseErr := backup.Close()
+		if err := errors.Join(copyErr, sourceCloseErr, backupCloseErr); err != nil {
+			return fmt.Errorf("could not finish workbook backup: %w", err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("could not inspect billing workbook before saving: %w", err)
+	}
+	tmp := s.path + ".tmp.xlsx"
+	if err := os.Remove(tmp); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("could not remove stale temporary workbook: %w", err)
+	}
+	if err := f.SaveAs(tmp); err != nil {
+		return fmt.Errorf("could not save temporary workbook: %w", err)
+	}
+	if err := os.Rename(tmp, s.path); err != nil {
+		if removeErr := os.Remove(tmp); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return fmt.Errorf("could not replace workbook: %v; temporary cleanup failed: %w", err, removeErr)
+		}
+		return fmt.Errorf("could not replace workbook (close it in Excel and retry): %w", err)
+	}
+	return nil
+}
+func sessionRows(f *excelize.File) ([][]string, error) { return f.GetRows("Sessions") }
+
+func sessionTimestamp(value string) (time.Time, error) {
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed, nil
+		}
+	}
+	if parsed, err := time.ParseInLocation("2006-01-02 15:04:05", value, billingTimezone); err == nil {
+		return parsed, nil
+	}
+	return time.Time{}, fmt.Errorf("invalid session timestamp %q", value)
+}
+
+func excelDateSerial(value time.Time) float64 {
+	local := value.In(billingTimezone)
+	date := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, time.UTC)
+	epoch := time.Date(1899, 12, 30, 0, 0, 0, 0, time.UTC)
+	return date.Sub(epoch).Hours() / 24
+}
+
+func excelTimeFraction(value time.Time) float64 {
+	local := value.In(billingTimezone)
+	seconds := local.Hour()*3600 + local.Minute()*60 + local.Second()
+	return float64(seconds) / 86400
+}
+
+func writeSessionRow(f *excelize.File, sheet string, row int, x Session, replaceExisting bool) error {
+	if _, err := sessionTimestamp(x.CreatedAt); err != nil {
+		return fmt.Errorf("session %q has no valid creation time: %w", x.ID, err)
+	}
+	started, err := sessionTimestamp(x.StartedAt)
+	if err != nil {
+		return fmt.Errorf("session %q has no valid start time: %w", x.ID, err)
+	}
+	values := []interface{}{
+		excelDateSerial(started), excelTimeFraction(started), x.CustomerName, x.PCName,
+		x.Players, excelTimeFraction(started), x.PurchasedMinutes + x.AdditionalMinutes, x.AmountPaid,
+	}
+	for i, value := range values {
+		cell := fmt.Sprintf("%s%d", column(i+1), row)
+		if err := f.SetCellValue(sheet, cell, value); err != nil {
+			return err
+		}
+	}
+	metadata, err := json.Marshal(sessionMetadata{Version: 1, Session: x, Payments: x.payments})
+	if err != nil {
+		return err
+	}
+	if len(metadata) > 32000 {
+		return fmt.Errorf("session %q metadata exceeds Excel's comment limit", x.ID)
+	}
+	if replaceExisting {
+		comments, err := f.GetComments(sheet)
+		if err != nil {
+			return err
+		}
+		for _, comment := range comments {
+			if strings.ReplaceAll(comment.Cell, "$", "") == fmt.Sprintf("A%d", row) {
+				if err := f.DeleteComment(sheet, comment.Cell); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if err := f.AddComment(sheet, excelize.Comment{
+		Cell: fmt.Sprintf("A%d", row), Author: "OverlayTimer", Text: string(metadata),
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func sessionsFromWorkbook(f *excelize.File) ([]Session, error) {
+	stored, err := storedSessionsFromWorkbook(f)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]Session, 0, len(stored))
+	for _, item := range stored {
+		result = append(result, item.Session)
+	}
+	return result, nil
+}
+
+type storedBillingSession struct {
+	Session Session
+	Row     int
+}
+
+func storedSessionsFromWorkbook(f *excelize.File) ([]storedBillingSession, error) {
+	rows, err := sessionRows(f)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 || !equalStrings(rows[0], sessionHeaders) {
+		return nil, errors.New("billing workbook has an invalid Sessions header")
+	}
+	comments, err := f.GetComments("Sessions")
+	if err != nil {
+		return nil, err
+	}
+	metadataByRow := make(map[int]sessionMetadata, len(comments))
+	for _, comment := range comments {
+		cell := strings.ReplaceAll(comment.Cell, "$", "")
+		if len(cell) < 2 || cell[0] != 'A' {
+			continue
+		}
+		row, err := strconv.Atoi(cell[1:])
+		if err != nil || row < 2 {
+			continue
+		}
+		var metadata sessionMetadata
+		if err := json.Unmarshal([]byte(comment.Text), &metadata); err != nil {
+			return nil, fmt.Errorf("billing metadata in A%d is invalid: %w", row, err)
+		}
+		if metadata.Version != 1 || metadata.Session.ID == "" {
+			return nil, fmt.Errorf("billing metadata in A%d is unsupported", row)
+		}
+		if _, exists := metadataByRow[row]; exists {
+			return nil, fmt.Errorf("billing row %d has duplicate session metadata", row)
+		}
+		metadata.Session.payments = metadata.Payments
+		metadataByRow[row] = metadata
+	}
+	result := make([]storedBillingSession, 0, len(rows)-1)
+	seenRows := make(map[int]struct{}, len(rows)-1)
+	for rowIndex, row := range rows[1:] {
+		if len(row) == 0 || strings.Join(row, "") == "" {
+			continue
+		}
+		rowNumber := rowIndex + 2
+		metadata, exists := metadataByRow[rowNumber]
+		if !exists {
+			return nil, fmt.Errorf("billing row %d is missing its session metadata; no data was changed", rowNumber)
+		}
+		seenRows[rowNumber] = struct{}{}
+		result = append(result, storedBillingSession{Session: metadata.Session, Row: rowNumber})
+	}
+	for rowNumber := range metadataByRow {
+		if _, exists := seenRows[rowNumber]; !exists {
+			return nil, fmt.Errorf("billing metadata in A%d has no session row; no data was changed", rowNumber)
+		}
+	}
+	return result, nil
+}
+func parseSession(r []string) Session {
+	get := func(i int) string {
+		if i < len(r) {
+			return r[i]
+		}
+		return ""
+	}
+	num := func(i int) int { v, _ := strconv.Atoi(get(i)); return v }
+	return Session{ID: get(0), PCID: get(1), PCName: get(2), PCAddress: get(3), Category: get(4), CustomerName: get(5), Players: num(6), Status: get(7), StartedAt: get(8), ExpectedEndAt: get(9), EndedAt: get(10), PurchasedMinutes: num(11), AdditionalMinutes: num(12), PricingSnapshot: get(13), EstimatedAmount: num(14), FinalAmount: num(15), AmountPaid: num(16), PaymentStatus: get(17), PaymentAt: get(18), CreatedAt: get(19), UpdatedAt: get(20)}
+}
+func rowFor(s Session) []string {
+	return []string{s.ID, s.PCID, s.PCName, s.PCAddress, s.Category, s.CustomerName, strconv.Itoa(s.Players), s.Status, s.StartedAt, s.ExpectedEndAt, s.EndedAt, strconv.Itoa(s.PurchasedMinutes), strconv.Itoa(s.AdditionalMinutes), s.PricingSnapshot, strconv.Itoa(s.EstimatedAmount), strconv.Itoa(s.FinalAmount), strconv.Itoa(s.AmountPaid), s.PaymentStatus, s.PaymentAt, s.CreatedAt, s.UpdatedAt}
+}
+func (s *BillingStore) require() error {
+	if !s.enabled {
+		return errors.New("billing is disabled on this machine")
+	}
+	return nil
+}
+func (s *BillingStore) sessions(search, payment string, statusFilter ...string) ([]Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.require(); err != nil {
+		return nil, err
+	}
+	f, err := s.openLocked()
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	rows, err := sessionsFromWorkbook(f)
+	if err != nil {
+		return nil, err
+	}
+	var out []Session
+	search = strings.ToLower(strings.TrimSpace(search))
+	status := ""
+	if len(statusFilter) > 0 {
+		status = statusFilter[0]
+	}
+	for _, x := range rows {
+		if status != "" && x.Status != status {
+			continue
+		}
+		if payment != "" && x.PaymentStatus != payment {
+			continue
+		}
+		if search != "" && !strings.Contains(strings.ToLower(x.CustomerName+" "+x.PCName+" "+x.ID), search) {
+			continue
+		}
+		out = append(out, x)
+	}
+	return out, nil
+}
+
+func (s *BillingStore) prepareStart(q StartSessionRequest) (Session, PC, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.require(); err != nil {
+		return Session{}, PC{}, err
+	}
+	pc, ok := store.find(q.PCID)
+	if !ok {
+		return Session{}, PC{}, errors.New("gaming system not found")
+	}
+	if pc.Inactive {
+		return Session{}, PC{}, errors.New("gaming system is inactive")
+	}
+	q.CustomerName = strings.TrimSpace(q.CustomerName)
+	if q.CustomerName == "" {
+		return Session{}, PC{}, errors.New("Please enter the customer name before starting the session.")
+	}
+	if len(q.CustomerName) > 120 {
+		return Session{}, PC{}, errors.New("customer name is too long")
+	}
+	if q.Players < 1 || q.Players > 4 {
+		return Session{}, PC{}, errors.New("players must be between 1 and 4")
+	}
+	entry, err := lookupPrice(q.Category, q.Players, q.DurationMinutes)
+	if err != nil {
+		return Session{}, PC{}, err
+	}
+	if q.ManualPrice != nil && (*q.ManualPrice < 0 || *q.ManualPrice > 9999999) {
+		return Session{}, PC{}, errors.New("manual price must be between 0 and 9999999 INR")
+	}
+	f, err := s.openLocked()
+	if err != nil {
+		return Session{}, PC{}, apiError(http.StatusInternalServerError, err)
+	}
+	defer f.Close()
+	rows, err := sessionsFromWorkbook(f)
+	if err != nil {
+		return Session{}, PC{}, apiError(http.StatusInternalServerError, err)
+	}
+	for _, x := range rows {
+		if x.PCID == pc.ID && x.Status == "open" {
+			return Session{}, PC{}, apiError(http.StatusConflict, errors.New("system already has an open session"))
+		}
+	}
+	sessionID, err := newSessionID()
+	if err != nil {
+		return Session{}, PC{}, fmt.Errorf("could not generate a session ID: %w", err)
+	}
+	finalAmount := entry.Amount
+	priceSnapshot := pricingSnapshot(entry)
+	if q.ManualPrice != nil {
+		finalAmount = *q.ManualPrice
+		priceSnapshot += fmt.Sprintf("; manual override ₹%d", *q.ManualPrice)
+	}
+	x := Session{
+		ID: sessionID, PCID: pc.ID,
+		PCName: pc.Name, PCAddress: pc.Address, Category: q.Category,
+		CustomerName: q.CustomerName, Players: q.Players, Status: "open",
+		PurchasedMinutes: q.DurationMinutes, PricingSnapshot: priceSnapshot, ManualPrice: q.ManualPrice,
+		EstimatedAmount: entry.Amount, FinalAmount: finalAmount, AmountPaid: finalAmount,
+		PaymentStatus: "paid",
+	}
+	return x, pc, nil
+}
+
+func newSessionID() (string, error) {
+	var id [16]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		return "", err
+	}
+	return "S-" + hex.EncodeToString(id[:]), nil
+}
+
+func (s *BillingStore) commitStart(x Session, startedAt time.Time) (Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.require(); err != nil {
+		return Session{}, err
+	}
+	f, err := s.openLocked()
+	if err != nil {
+		return Session{}, apiError(http.StatusInternalServerError, err)
+	}
+	defer f.Close()
+	sessions, err := sessionsFromWorkbook(f)
+	if err != nil {
+		return Session{}, apiError(http.StatusInternalServerError, err)
+	}
+	for _, current := range sessions {
+		if current.PCID == x.PCID && current.Status == "open" {
+			return Session{}, apiError(http.StatusConflict, errors.New("system already has an open session"))
+		}
+	}
+	if err := s.ensureDeviceIDLocked(); err != nil {
+		return Session{}, err
+	}
+	x.DeviceID = s.deviceID
+	x.CreatedAt = time.Now().In(billingTimezone).Format(time.RFC3339Nano)
+	x.UpdatedAt = x.CreatedAt
+	x.PaymentAt = startedAt.In(billingTimezone).Format(time.RFC3339Nano)
+	x.StartedAt = x.PaymentAt
+	x.ExpectedEndAt = startedAt.Add(time.Duration(x.PurchasedMinutes) * time.Minute).Format(time.RFC3339Nano)
+	rows, err := sessionRows(f)
+	if err != nil {
+		return Session{}, apiError(http.StatusInternalServerError, err)
+	}
+	row := len(rows) + 1
+	if err := writeSessionRow(f, "Sessions", row, x, false); err != nil {
+		return Session{}, apiError(http.StatusInternalServerError, err)
+	}
+	if err := formatSessionDataRows(f, "Sessions", row, row); err != nil {
+		return Session{}, apiError(http.StatusInternalServerError, err)
+	}
+	if err := s.saveLocked(f); err != nil {
+		return Session{}, apiError(http.StatusInternalServerError, err)
+	}
+	return x, nil
+}
+
+type billingHTTPError struct {
+	Status int
+	Err    error
+}
+
+func (e *billingHTTPError) Error() string { return e.Err.Error() }
+func (e *billingHTTPError) Unwrap() error { return e.Err }
+
+func apiError(status int, err error) error {
+	return &billingHTTPError{Status: status, Err: err}
+}
+
+var billingStartMu sync.Mutex
+var billingCloseMu sync.Mutex
+
+func startBillingSession(q StartSessionRequest) (Session, error) {
+	billingStartMu.Lock()
+	defer billingStartMu.Unlock()
+
+	x, pc, err := billingStore.prepareStart(q)
+	if err != nil {
+		return Session{}, err
+	}
+	previous, err := getTimerStatus(pc.Address)
+	if err != nil {
+		return Session{}, apiError(http.StatusBadGateway, fmt.Errorf("could not read timer status for %s: %w", pc.Name, err))
+	}
+	restoreAfterFailure := func(cause error, status int) error {
+		if restoreErr := restoreTimerStatus(pc.Address, previous); restoreErr != nil {
+			logf("billing", "session start failed for pc_id=%s; timer rollback failed: %v", pc.ID, restoreErr)
+			return apiError(http.StatusBadGateway, fmt.Errorf("%v; restoring the previous timer state also failed: %w", cause, restoreErr))
+		}
+		return apiError(status, fmt.Errorf("%v; previous timer state was restored", cause))
+	}
+
+	if err := timerAction(pc.Address, "set", x.PurchasedMinutes*60); err != nil {
+		return Session{}, restoreAfterFailure(fmt.Errorf("could not set timer for %s: %w", pc.Name, err), http.StatusBadGateway)
+	}
+	startedAt := time.Now().In(billingTimezone)
+	if err := timerAction(pc.Address, "play", 0); err != nil {
+		return Session{}, restoreAfterFailure(fmt.Errorf("could not start timer for %s: %w", pc.Name, err), http.StatusBadGateway)
+	}
+	if err := updateBillingSessionLink(pc, x.ID, false); err != nil {
+		cause := fmt.Errorf("could not configure billing synchronization for %s: %w", pc.Name, err)
+		if clearErr := updateBillingSessionLink(pc, x.ID, true); clearErr != nil {
+			cause = fmt.Errorf("%w; clearing a partial timer billing link also failed: %v", cause, clearErr)
+		}
+		return Session{}, restoreAfterFailure(cause, http.StatusBadGateway)
+	}
+	x, err = billingStore.commitStart(x, startedAt)
+	if err != nil {
+		if linkErr := updateBillingSessionLink(pc, x.ID, true); linkErr != nil {
+			logf("billing", "session start failed for pc_id=%s; could not clear timer billing link: %v", pc.ID, linkErr)
+			err = fmt.Errorf("%w; clearing the timer billing link also failed: %v", err, linkErr)
+		}
+		var statusErr *billingHTTPError
+		if errors.As(err, &statusErr) {
+			return Session{}, restoreAfterFailure(statusErr.Err, statusErr.Status)
+		}
+		return Session{}, restoreAfterFailure(err, http.StatusInternalServerError)
+	}
+	return x, nil
+}
+
+func timerEndpoint(address, action string) string {
+	return strings.TrimRight(address, "/") + "/" + action
+}
+
+func getTimerStatus(address string) (TimerStatus, error) {
+	request, err := http.NewRequest(http.MethodGet, timerEndpoint(address, "status"), nil)
+	if err != nil {
+		return TimerStatus{}, err
+	}
+	deviceID := ""
+	if pc, ok := registeredPCByAddress(address); ok {
+		deviceID = pc.ID
+	}
+	response, err := monitoredHTTPDo(request, "timer-status", deviceID)
+	if err != nil {
+		return TimerStatus{}, err
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+	if err != nil {
+		return TimerStatus{}, err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return TimerStatus{}, fmt.Errorf("status endpoint returned HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var status TimerStatus
+	if err := httpcheck.DecodeJSON(body, response.Header.Get("Content-Type"), &status); err != nil {
+		return TimerStatus{}, fmt.Errorf("invalid timer status response: %w", err)
+	}
+	if status.TimerStatus != "running" && status.TimerStatus != "paused" {
+		return TimerStatus{}, errors.New("timer status response is missing a valid timer state")
+	}
+	return status, nil
+}
+
+func timerActionWithRemaining(address, action string, seconds int) (int, error) {
+	payload := []byte("{}")
+	switch action {
+	case "set":
+		payload = fmt.Appendf(nil, `{"seconds":%d}`, seconds)
+	case "tweak":
+		payload = fmt.Appendf(nil, `{"amount":%d}`, seconds)
+	}
+	request, err := http.NewRequest(http.MethodPost, timerEndpoint(address, action), bytes.NewReader(payload))
+	if err != nil {
+		return 0, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	deviceID := ""
+	if pc, ok := registeredPCByAddress(address); ok {
+		deviceID = pc.ID
+	}
+	response, err := monitoredHTTPDo(request, "timer-action", deviceID)
+	if err != nil {
+		return 0, err
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+	if err != nil {
+		return 0, err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return 0, fmt.Errorf("timer endpoint returned HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var result struct {
+		Status           string `json:"status"`
+		Message          string `json:"message"`
+		RemainingSeconds *int   `json:"remaining_seconds"`
+	}
+	if err := httpcheck.DecodeJSON(body, response.Header.Get("Content-Type"), &result); err != nil {
+		return 0, fmt.Errorf("invalid timer response: %w", err)
+	}
+	if result.Status != "success" {
+		if result.Message == "" {
+			result.Message = "timer command was not accepted"
+		}
+		return 0, errors.New(result.Message)
+	}
+	remaining := 0
+	if result.RemainingSeconds != nil {
+		remaining = *result.RemainingSeconds
+	}
+	return remaining, nil
+}
+
+func timerAction(address, action string, seconds int) error {
+	_, err := timerActionWithRemaining(address, action, seconds)
+	return err
+}
+
+func restoreTimerStatus(address string, previous TimerStatus) error {
+	actions := []struct {
+		action  string
+		seconds int
+	}{
+		{"set", previous.RemainingSeconds},
+		{"pause", 0},
+		{"hide", 0},
+	}
+	if previous.IsRunning {
+		actions[1].action = "play"
+	}
+	if previous.TimeUpVisible {
+		actions[2].action = "show"
+	}
+	var failures []error
+	for _, item := range actions {
+		if err := timerAction(address, item.action, item.seconds); err != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", item.action, err))
+		}
+	}
+	return errors.Join(failures...)
+}
+
+func (s *BillingStore) summary() BillingSummary {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := BillingSummary{Enabled: s.enabled}
+	if !s.enabled {
+		out.ConfigurationStatus = "billing disabled"
+		return out
+	}
+	f, err := s.openLocked()
+	if err != nil {
+		out.ConfigurationStatus = err.Error()
+		return out
+	}
+	defer f.Close()
+	rows, err := sessionsFromWorkbook(f)
+	if err != nil {
+		out.ConfigurationStatus = err.Error()
+		return out
+	}
+	today := time.Now().In(billingTimezone).Format("2006-01-02")
+	for _, x := range rows {
+		if x.Status == "open" {
+			out.OpenSessions++
+		}
+		if x.PaymentAt != "" {
+			paidAt, err := sessionTimestamp(x.PaymentAt)
+			if err != nil {
+				out.ConfigurationStatus = fmt.Sprintf("invalid payment timestamp for session %s", x.ID)
+				return out
+			}
+			if paidAt.In(billingTimezone).Format("2006-01-02") == today {
+				out.TodayCollected += x.AmountPaid
+			}
+		}
+	}
+	return out
+}
+
+func (s *BillingStore) update(id, action string, minutes, amount int) (Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.require(); err != nil {
+		return Session{}, err
+	}
+	f, err := s.openLocked()
+	if err != nil {
+		return Session{}, err
+	}
+	defer f.Close()
+	rows, err := storedSessionsFromWorkbook(f)
+	if err != nil {
+		return Session{}, err
+	}
+	for _, stored := range rows {
+		x := stored.Session
+		if x.ID != id {
+			continue
+		}
+		if x.DeviceID == "" {
+			x.DeviceID = s.deviceID
+		}
+		now := time.Now().In(billingTimezone).Format(time.RFC3339Nano)
+		switch action {
+		case "extend":
+			if x.Status != "open" {
+				return Session{}, errors.New("only open sessions can be extended")
+			}
+			entry, e := lookupPrice(x.Category, x.Players, minutes)
+			if e != nil {
+				return Session{}, e
+			}
+			x.PurchasedMinutes += minutes
+			x.FinalAmount += entry.Amount
+			x.EstimatedAmount = x.FinalAmount
+			x.AmountPaid += entry.Amount
+			x.PaymentStatus = "paid"
+			x.PaymentAt = now
+			x.payments = append(x.payments, paymentRecord{
+				ID:        "P-" + time.Now().UTC().Format("20060102150405.000000000"),
+				Timestamp: now, Amount: entry.Amount, Status: "paid",
+			})
+			start, e := sessionTimestamp(x.StartedAt)
+			if e == nil {
+				x.ExpectedEndAt = start.Add(time.Duration(x.PurchasedMinutes+x.AdditionalMinutes) * time.Minute).Format(time.RFC3339Nano)
+			}
+		case "pay":
+			if amount <= 0 {
+				amount = x.FinalAmount - x.AmountPaid
+			}
+			if amount <= 0 {
+				return Session{}, errors.New("no amount is due")
+			}
+			x.AmountPaid += amount
+			x.PaymentAt = now
+			if x.AmountPaid >= x.FinalAmount {
+				x.PaymentStatus = "paid"
+			} else {
+				x.PaymentStatus = "partial"
+			}
+			x.payments = append(x.payments, paymentRecord{
+				ID:        "P-" + time.Now().UTC().Format("20060102150405.000000000"),
+				Timestamp: now, Amount: amount, Status: x.PaymentStatus,
+			})
+		case "close":
+			if x.Status != "open" {
+				return Session{}, apiError(http.StatusConflict, errors.New("session is already closed"))
+			}
+			started, parseErr := sessionTimestamp(x.StartedAt)
+			if parseErr != nil {
+				return Session{}, fmt.Errorf("session %q has an invalid start time: %w", x.ID, parseErr)
+			}
+			ended, parseErr := sessionTimestamp(now)
+			if parseErr != nil {
+				return Session{}, parseErr
+			}
+			x.Status = "closed"
+			x.EndedAt = now
+			x.ActualDurationSeconds = max(0, int(ended.Sub(started).Seconds()))
+		default:
+			return Session{}, errors.New("unknown session action")
+		}
+		x.UpdatedAt = now
+		x.SyncedUpdatedAt = ""
+		if err := writeSessionRow(f, "Sessions", stored.Row, x, true); err != nil {
+			return Session{}, err
+		}
+		if err := formatSessionDataRows(f, "Sessions", stored.Row, stored.Row); err != nil {
+			return Session{}, err
+		}
+		if err := s.saveLocked(f); err != nil {
+			return Session{}, err
+		}
+		return x, nil
+	}
+	return Session{}, errors.New("session not found")
+}
+
+func normalizeSessionAddress(address string) string {
+	return strings.TrimRight(strings.ToLower(strings.TrimSpace(address)), "/")
+}
+
+func registeredPCByAddress(address string) (PC, bool) {
+	normalized := normalizeSessionAddress(address)
+	if normalized == "" {
+		return PC{}, false
+	}
+	for _, pc := range store.list() {
+		if normalizeSessionAddress(pc.Address) == normalized {
+			return pc, true
+		}
+	}
+	return PC{}, false
+}
+
+func extensionPaymentID(requestID string) string {
+	sum := sha256.Sum256([]byte(requestID))
+	return "E-" + hex.EncodeToString(sum[:])
+}
+
+func (s *BillingStore) extendSessionRecord(id, pcID, pcAddress string, minutes, amount, remaining int, requestID string) (Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.require(); err != nil {
+		return Session{}, err
+	}
+	f, err := s.openLocked()
+	if err != nil {
+		return Session{}, err
+	}
+	defer f.Close()
+	rows, err := storedSessionsFromWorkbook(f)
+	if err != nil {
+		return Session{}, err
+	}
+	requestKey := extensionPaymentID(requestID)
+	for _, stored := range rows {
+		x := stored.Session
+		if x.ID != id {
+			continue
+		}
+		if x.DeviceID == "" {
+			x.DeviceID = s.deviceID
+		}
+		if x.PCID != pcID || normalizeSessionAddress(x.PCAddress) != normalizeSessionAddress(pcAddress) {
+			return Session{}, errors.New("session does not belong to the requested system endpoint")
+		}
+		if x.Status != "open" {
+			return Session{}, errors.New("only open sessions can be extended")
+		}
+		for _, payment := range x.payments {
+			if payment.ID != requestKey {
+				continue
+			}
+			if payment.ExtensionMinutes != minutes {
+				return Session{}, errors.New("extension request ID was already used with a different duration")
+			}
+			return x, nil
+		}
+
+		now := time.Now().In(billingTimezone).Format(time.RFC3339Nano)
+		x.PurchasedMinutes += minutes
+		x.FinalAmount += amount
+		x.EstimatedAmount = x.FinalAmount
+		x.AmountPaid += amount
+		if x.AmountPaid >= x.FinalAmount {
+			x.PaymentStatus = "paid"
+		} else {
+			x.PaymentStatus = "partial"
+		}
+		x.PaymentAt = now
+		x.UpdatedAt = now
+		x.SyncedUpdatedAt = ""
+		x.payments = append(x.payments, paymentRecord{
+			ID: requestKey, Timestamp: now, Amount: amount, Status: x.PaymentStatus,
+			ExtensionMinutes: minutes, RemainingSeconds: remaining,
+		})
+		started, err := sessionTimestamp(x.StartedAt)
+		if err != nil {
+			return Session{}, fmt.Errorf("session %q has no valid start time: %w", x.ID, err)
+		}
+		x.ExpectedEndAt = started.Add(time.Duration(x.PurchasedMinutes+x.AdditionalMinutes) * time.Minute).Format(time.RFC3339Nano)
+		if err := writeSessionRow(f, "Sessions", stored.Row, x, true); err != nil {
+			return Session{}, err
+		}
+		if err := formatSessionDataRows(f, "Sessions", stored.Row, stored.Row); err != nil {
+			return Session{}, err
+		}
+		if err := s.saveLocked(f); err != nil {
+			return Session{}, err
+		}
+		return x, nil
+	}
+	return Session{}, errors.New("session not found")
+}
+
+func (s *BillingStore) openSessionForSystem(sessionID, pcID, pcAddress string) (Session, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.require(); err != nil {
+		return Session{}, false, err
+	}
+	f, err := s.openLocked()
+	if err != nil {
+		return Session{}, false, err
+	}
+	defer f.Close()
+	stored, err := storedSessionsFromWorkbook(f)
+	if err != nil {
+		return Session{}, false, err
+	}
+	targetAddr := normalizeSessionAddress(pcAddress)
+	if sessionID == "" && pcID == "" && targetAddr == "" {
+		return Session{}, false, errors.New("session ID or system endpoint is required")
+	}
+	var foundSession Session
+	found := false
+	for _, item := range stored {
+		x := item.Session
+		if x.Status != "open" || (sessionID != "" && x.ID != sessionID) {
+			continue
+		}
+		if pcID != "" && x.PCID != pcID {
+			continue
+		}
+		if targetAddr != "" && normalizeSessionAddress(x.PCAddress) != targetAddr {
+			continue
+		}
+		if found {
+			return Session{}, false, errors.New("multiple open sessions match the requested system endpoint")
+		}
+		foundSession, found = x, true
+	}
+	if !found && sessionID != "" {
+		for _, item := range stored {
+			x := item.Session
+			if x.Status == "open" &&
+				(pcID == "" || x.PCID == pcID) &&
+				(targetAddr == "" || normalizeSessionAddress(x.PCAddress) == targetAddr) {
+				return Session{}, false, errors.New("session ID no longer matches the active session for this system")
+			}
+		}
+	}
+	return foundSession, found, nil
+}
+
+type ExtendSessionRequest struct {
+	SessionID  string `json:"session_id,omitempty"`
+	PCID       string `json:"pc_id,omitempty"`
+	PCAddress  string `json:"pc_address,omitempty"`
+	Minutes    int    `json:"minutes,omitempty"`
+	Seconds    int    `json:"seconds,omitempty"`
+	RequestID  string `json:"request_id,omitempty"`
+	TweakTimer *bool  `json:"tweak_timer,omitempty"`
+}
+
+type ExtendSessionResponse struct {
+	SessionFound     bool     `json:"session_found"`
+	Session          *Session `json:"session,omitempty"`
+	RemainingSeconds int      `json:"remaining_seconds,omitempty"`
+	Message          string   `json:"message,omitempty"`
+}
+
+var (
+	extensionMu sync.Mutex
+)
+
+func extendSessionForSystem(req ExtendSessionRequest, tweakRemoteTimer bool) (ExtendSessionResponse, error) {
+	extensionMu.Lock()
+	defer extensionMu.Unlock()
+
+	if req.TweakTimer != nil {
+		tweakRemoteTimer = *req.TweakTimer
+	}
+
+	if strings.TrimSpace(req.RequestID) == "" {
+		return ExtendSessionResponse{}, errors.New("extension request ID is required")
+	}
+	if len(req.RequestID) > 200 {
+		return ExtendSessionResponse{}, errors.New("extension request ID is too long")
+	}
+
+	var targetAddress string
+	var targetPC PC
+	if req.PCID != "" {
+		pc, ok := store.find(req.PCID)
+		if !ok {
+			return ExtendSessionResponse{}, errors.New("gaming system not found")
+		}
+		targetPC = pc
+		targetAddress = pc.Address
+		if req.PCAddress != "" && normalizeSessionAddress(req.PCAddress) != normalizeSessionAddress(pc.Address) {
+			return ExtendSessionResponse{}, errors.New("system ID and endpoint do not match")
+		}
+	} else if req.PCAddress != "" {
+		for _, pc := range store.list() {
+			if normalizeSessionAddress(pc.Address) == normalizeSessionAddress(req.PCAddress) {
+				targetPC = pc
+				targetAddress = pc.Address
+				break
+			}
+		}
+		if targetAddress == "" {
+			return ExtendSessionResponse{}, errors.New("system endpoint is not registered")
+		}
+	}
+
+	activeSession, found, err := billingStore.openSessionForSystem(req.SessionID, targetPC.ID, targetAddress)
+	if err != nil {
+		return ExtendSessionResponse{}, err
+	}
+	if !found {
+		return ExtendSessionResponse{
+			SessionFound: false,
+			Message:      "no open billing session found for this system",
+		}, nil
+	}
+
+	if targetAddress == "" {
+		targetAddress = activeSession.PCAddress
+		targetPC.ID = activeSession.PCID
+	}
+
+	minutes := req.Minutes
+	if req.Seconds != 0 {
+		if minutes != 0 {
+			return ExtendSessionResponse{}, errors.New("specify either minutes or seconds, not both")
+		}
+		if req.Seconds <= 0 || req.Seconds%60 != 0 {
+			return ExtendSessionResponse{}, errors.New("a billed extension must add a whole number of minutes")
+		}
+		minutes = req.Seconds / 60
+	}
+	if minutes <= 0 {
+		return ExtendSessionResponse{}, errors.New("extension duration must be greater than zero")
+	}
+	entry, err := lookupPrice(activeSession.Category, activeSession.Players, minutes)
+	if err != nil {
+		return ExtendSessionResponse{}, fmt.Errorf("pricing rule lookup failed: %w", err)
+	}
+
+	requestKey := extensionPaymentID(req.RequestID)
+	for _, payment := range activeSession.payments {
+		if payment.ID != requestKey {
+			continue
+		}
+		if payment.ExtensionMinutes != minutes {
+			return ExtendSessionResponse{}, errors.New("extension request ID was already used with a different duration")
+		}
+		remaining := payment.RemainingSeconds
+		if tweakRemoteTimer {
+			status, statusErr := getTimerStatus(targetAddress)
+			if statusErr != nil {
+				return ExtendSessionResponse{}, fmt.Errorf("extension was already applied to session %s, but current timer status could not be read: %w", activeSession.ID, statusErr)
+			}
+			remaining = status.RemainingSeconds
+		}
+		return ExtendSessionResponse{SessionFound: true, Session: &activeSession, RemainingSeconds: remaining}, nil
+	}
+
+	remainingSeconds := 0
+	if tweakRemoteTimer && targetAddress != "" {
+		rem, err := timerActionWithRemaining(targetAddress, "tweak", minutes*60)
+		if err != nil {
+			return ExtendSessionResponse{}, fmt.Errorf("could not extend overlay timer on %s: %w", activeSession.PCName, err)
+		}
+		remainingSeconds = rem
+	}
+
+	updated, err := billingStore.extendSessionRecord(activeSession.ID, activeSession.PCID, activeSession.PCAddress, minutes, entry.Amount, remainingSeconds, req.RequestID)
+	if err != nil {
+		if tweakRemoteTimer && targetAddress != "" {
+			if _, rollbackErr := timerActionWithRemaining(targetAddress, "tweak", -minutes*60); rollbackErr != nil {
+				return ExtendSessionResponse{}, apiError(http.StatusInternalServerError, fmt.Errorf("could not update Excel billing record for session %s: %v; timer rollback also failed: %w", activeSession.ID, err, rollbackErr))
+			}
+		}
+		return ExtendSessionResponse{}, apiError(http.StatusInternalServerError, fmt.Errorf("could not update Excel billing record: %w", err))
+	}
+
+	resp := ExtendSessionResponse{
+		SessionFound:     true,
+		Session:          &updated,
+		RemainingSeconds: remainingSeconds,
+	}
+	return resp, nil
+}
+
+func newExtensionRequestID() (string, error) {
+	var id [16]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(id[:]), nil
+}
+
+func localBillingPC(pc PC) bool {
+	target, err := url.Parse(pc.Address)
+	if err != nil {
+		return false
+	}
+	local, err := url.Parse(localRegistryPC().Address)
+	if err != nil {
+		return false
+	}
+	targetHost, localHost := strings.TrimSuffix(strings.ToLower(target.Hostname()), "."), strings.TrimSuffix(strings.ToLower(local.Hostname()), ".")
+	if pc.UIPort != 0 && pc.UIPort != appConfig.UIDiscoveryPort {
+		return false
+	}
+	targetIP, localIP := net.ParseIP(targetHost), net.ParseIP(localHost)
+	if targetHost == "localhost" || (targetIP != nil && targetIP.IsLoopback()) {
+		return true
+	}
+	if target.Port() != local.Port() {
+		return false
+	}
+	return targetHost == localHost || (targetIP != nil && localIP != nil && targetIP.Equal(localIP))
+}
+
+var billingSyncRunMu sync.Mutex
+
+func billingDeviceIdentity() (string, error) {
+	billingStore.mu.Lock()
+	defer billingStore.mu.Unlock()
+	if err := billingStore.require(); err != nil {
+		return "", err
+	}
+	if err := billingStore.ensureDeviceIDLocked(); err != nil {
+		return "", err
+	}
+	return billingStore.deviceID, nil
+}
+
+func billingSyncTime() string {
+	return time.Now().In(billingTimezone).Format(time.RFC3339Nano)
+}
+
+func syncOneBillingDevice(pc PC, endpoint string, knownDevices *sync.Map) BillingDeviceStatus {
+	status := BillingDeviceStatus{
+		Name: pc.Name, Endpoint: endpoint, LastAttemptAt: billingSyncTime(),
+	}
+	var exported BillingSyncExport
+	if err := callBillingPeer(pc, http.MethodGet, "/internal/api/billing/sync/pending", nil, &exported); err != nil {
+		status.DeviceID = "unavailable-" + stablePCID(endpoint)
+		status.Error = err.Error()
+		return status
+	}
+	status.Online = true
+	status.DeviceID = exported.DeviceID
+	if status.DeviceID == "" {
+		status.DeviceID = "unavailable-" + stablePCID(endpoint)
+		status.Error = "billing device did not provide a stable device ID"
+		return status
+	}
+	if exported.Name != "" {
+		status.Name = exported.Name
+	}
+	status.PendingRecords = len(exported.Sessions)
+	if owner, exists := knownDevices.LoadOrStore(status.DeviceID, endpoint); exists && owner != endpoint {
+		status.Online = true
+		status.Error = fmt.Sprintf("duplicate billing device ID also reported by %s; records were not merged", owner)
+		return status
+	}
+	for i := range exported.Sessions {
+		if exported.Sessions[i].DeviceID != status.DeviceID {
+			status.Error = "billing device exported a session with a mismatched device ID"
+			return status
+		}
+	}
+	if err := billingStore.mergeSyncedSessions(status.DeviceID, exported.Sessions); err != nil {
+		status.Error = fmt.Sprintf("could not save synchronized sessions: %v", err)
+		return status
+	}
+	if len(exported.Sessions) > 0 {
+		ack := BillingSyncAck{DeviceID: status.DeviceID, Sessions: make([]BillingSyncAckRecord, 0, len(exported.Sessions))}
+		for _, session := range exported.Sessions {
+			ack.Sessions = append(ack.Sessions, BillingSyncAckRecord{ID: session.ID, UpdatedAt: session.UpdatedAt})
+		}
+		var ackResult BillingSyncAckResult
+		if err := callBillingPeer(pc, http.MethodPost, "/internal/api/billing/sync/ack", ack, &ackResult); err != nil {
+			status.Error = fmt.Sprintf("records were saved centrally but source acknowledgement failed: %v", err)
+			return status
+		}
+		if ackResult.Acknowledged != len(exported.Sessions) {
+			status.PendingRecords = len(exported.Sessions) - ackResult.Acknowledged
+			status.Error = "one or more sessions changed during synchronization and remain pending"
+			return status
+		}
+	}
+	status.PendingRecords = 0
+	status.LastSuccessfulAt = status.LastAttemptAt
+	return status
+}
+
+func syncBillingDevices() ([]BillingDeviceStatus, error) {
+	if !billingSyncRunMu.TryLock() {
+		return billingStore.billingSyncStatuses(), errors.New("billing synchronization is already running")
+	}
+	defer billingSyncRunMu.Unlock()
+	previousStatuses := billingStore.billingSyncStatuses()
+	deviceID, err := billingDeviceIdentity()
+	if err != nil {
+		return nil, err
+	}
+	now := billingSyncTime()
+	local := localRegistryPC()
+	localEndpoint, err := billingPeerEndpoint(local, "")
+	if err != nil {
+		return nil, err
+	}
+	localStatus := BillingDeviceStatus{
+		DeviceID: deviceID, Name: configuredFriendlyName(), Endpoint: localEndpoint,
+		Online: true, LastAttemptAt: now, LastSuccessfulAt: now,
+	}
+	var knownDevices sync.Map
+	knownDevices.Store(deviceID, localEndpoint)
+	statuses := []BillingDeviceStatus{localStatus}
+
+	type peer struct {
+		pc       PC
+		endpoint string
+	}
+	peers := make(map[string]peer)
+	for _, pc := range store.list() {
+		if pc.Deleted {
+			continue
+		}
+		endpoint, endpointErr := billingPeerEndpoint(pc, "")
+		if endpointErr != nil || localBillingPC(pc) {
+			continue
+		}
+		if _, exists := peers[endpoint]; !exists {
+			peers[endpoint] = peer{pc: pc, endpoint: endpoint}
+		}
+	}
+	results := make(chan BillingDeviceStatus, len(peers))
+	for _, item := range peers {
+		go func(item peer) {
+			results <- syncOneBillingDevice(item.pc, item.endpoint, &knownDevices)
+		}(item)
+	}
+	for range len(peers) {
+		status := <-results
+		if status.LastSuccessfulAt == "" {
+			for _, previous := range previousStatuses {
+				if previous.Endpoint == status.Endpoint && previous.LastSuccessfulAt != "" {
+					status.LastSuccessfulAt = previous.LastSuccessfulAt
+					break
+				}
+			}
+		}
+		statuses = append(statuses, status)
+	}
+	if err := billingStore.replaceSyncStatuses(statuses); err != nil {
+		return billingStore.billingSyncStatuses(), err
+	}
+	return billingStore.billingSyncStatuses(), nil
+}
+
+func startBillingSyncScheduler() {
+	go func() {
+		if _, err := syncBillingDevices(); err != nil {
+			logf("billing-sync", "initial synchronization failed: %v", err)
+		}
+		ticker := time.NewTicker(billingSyncInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			if _, err := syncBillingDevices(); err != nil {
+				logf("billing-sync", "synchronization failed: %v", err)
+			}
+		}
+	}()
+}
+
+func billingSyncHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST required"})
+		return
+	}
+	statuses, err := syncBillingDevices()
+	if err != nil {
+		writeBillingError(w, err)
+		return
+	}
+	complete := len(statuses) > 0
+	for _, status := range statuses {
+		if !status.Online || status.PendingRecords > 0 || status.Error != "" {
+			complete = false
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"complete": complete, "devices": statuses})
+}
+
+func billingReportHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "GET required"})
+		return
+	}
+	date := r.URL.Query().Get("date")
+	if date == "" {
+		date = time.Now().In(billingTimezone).Format("2006-01-02")
+	}
+	report, err := billingStore.report(date)
+	if err != nil {
+		writeBillingError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
+}
+
+func billingSyncPendingHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "GET required"})
+		return
+	}
+	result, err := billingStore.pendingSync()
+	if err != nil {
+		writeBillingError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func billingSyncAckHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST required"})
+		return
+	}
+	var ack BillingSyncAck
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&ack); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid billing synchronization acknowledgement"})
+		return
+	}
+	acknowledged, err := billingStore.acknowledgeSync(ack)
+	if err != nil {
+		writeBillingError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, BillingSyncAckResult{Acknowledged: acknowledged})
+}
+
+func billingPeerEndpoint(pc PC, path string) (string, error) {
+	parsed, err := url.Parse(pc.Address)
+	if err != nil || parsed.Hostname() == "" {
+		return "", errors.New("registered system has an invalid timer endpoint")
+	}
+	uiPort := pc.UIPort
+	if uiPort < 1 {
+		uiPort = appConfig.UIDiscoveryPort
+	}
+	if uiPort < 1 || uiPort > 65535 {
+		return "", errors.New("registered system has an invalid management port")
+	}
+	return "http://" + net.JoinHostPort(parsed.Hostname(), strconv.Itoa(uiPort)) + path, nil
+}
+
+func callBillingPeer(pc PC, method, path string, payload, result any) error {
+	return callBillingPeerContext(context.Background(), pc, method, path, payload, result)
+}
+
+func callBillingPeerContext(ctx context.Context, pc PC, method, path string, payload, result any) error {
+	endpoint, err := billingPeerEndpoint(pc, path)
+	if err != nil {
+		return err
+	}
+	operation := billingPeerOperation(method, path)
+	var body io.Reader
+	if payload != nil {
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewReader(encoded)
+	}
+	request, err := http.NewRequestWithContext(ctx, method, endpoint, body)
+	if err != nil {
+		logBillingPeerFailure(operation, pc, method, endpoint, "", 0, "", err)
+		return err
+	}
+	if payload != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	response, err := monitoredHTTPDo(request, operation, pc.ID)
+	if err != nil {
+		logBillingPeerFailure(operation, pc, method, endpoint, request.Header.Get(httpcheck.RequestIDHeader), 0, "", err)
+		return apiError(http.StatusBadGateway, fmt.Errorf("could not reach billing device %s at %s %s: %w", pc.Name, method, endpoint, err))
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(response.Body, 2<<20))
+	if err != nil {
+		logBillingPeerFailure(operation, pc, method, endpoint, request.Header.Get(httpcheck.RequestIDHeader), response.StatusCode, "", err)
+		return apiError(http.StatusBadGateway, fmt.Errorf("could not read response from billing device %s: %w", pc.Name, err))
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		logBillingPeerFailure(operation, pc, method, endpoint, request.Header.Get(httpcheck.RequestIDHeader), response.StatusCode, string(data), nil)
+		var problem struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(data, &problem)
+		if problem.Error == "" {
+			problem.Error = strings.TrimSpace(string(data))
+		}
+		return apiError(http.StatusBadGateway, fmt.Errorf("billing device %s request %s %s returned HTTP %d: %s", pc.Name, method, endpoint, response.StatusCode, problem.Error))
+	}
+	if result != nil {
+		if err := httpcheck.DecodeJSON(data, response.Header.Get("Content-Type"), result); err != nil {
+			logBillingPeerFailure(operation, pc, method, endpoint, request.Header.Get(httpcheck.RequestIDHeader), response.StatusCode, "", err)
+			return apiError(http.StatusBadGateway, fmt.Errorf("billing device %s returned an invalid response: %w", pc.Name, err))
+		}
+	}
+	return nil
+}
+
+func billingPeerOperation(method, path string) string {
+	switch {
+	case method == http.MethodPost && path == "/internal/api/local/sessions":
+		return "session-start"
+	case method == http.MethodPost && strings.HasSuffix(path, "/close") &&
+		strings.HasPrefix(path, "/internal/api/local/sessions/"):
+		return "session-close"
+	case strings.HasPrefix(path, "/internal/api/local/sessions/extend"):
+		return "session-extension"
+	case path == "/internal/api/billing/sync/pending":
+		return "billing-sync-export"
+	case path == "/internal/api/billing/sync/ack":
+		return "billing-sync-acknowledgement"
+	default:
+		return "billing-peer-request"
+	}
+}
+
+func safePeerErrorBody(body string) string {
+	const maxLogBody = 160
+	body = strings.TrimSpace(body)
+	switch body {
+	case "404 page not found", "Method Not Allowed", "Not Found":
+		if len(body) > maxLogBody {
+			body = body[:maxLogBody]
+		}
+		return body
+	case "":
+		return "<empty>"
+	default:
+		return "<response body omitted>"
+	}
+}
+
+func logBillingPeerFailure(operation string, pc PC, method, endpoint, requestID string, status int, body string, err error) {
+	handlerResult := "application-response"
+	if status == 0 {
+		handlerResult = "no-response"
+	} else if safePeerErrorBody(body) == "404 page not found" {
+		handlerResult = "route-not-matched"
+	}
+	logf("billing-peer",
+		"operation=%s request_id=%q registered_pc_id=%q name=%q method=%s url=%s status=%d handler_result=%s response_body=%q error=%v",
+		operation, requestID, pc.ID, pc.Name, method, endpoint, status, handlerResult, safePeerErrorBody(body), err)
+}
+
+func startBillingSessionForDashboard(q StartSessionRequest) (Session, error) {
+	return startBillingSessionForDashboardContext(context.Background(), q)
+}
+
+func startBillingSessionForDashboardContext(ctx context.Context, q StartSessionRequest) (Session, error) {
+	pc, ok := store.find(q.PCID)
+	if !ok {
+		return Session{}, errors.New("gaming system not found")
+	}
+	if localBillingPC(pc) {
+		return startBillingSession(q)
+	}
+	var session Session
+	if err := callBillingPeerContext(ctx, pc, http.MethodPost, "/internal/api/local/sessions", q, &session); err != nil {
+		return Session{}, err
+	}
+	if session.DeviceID == "" || session.PCID != pc.ID || normalizeSessionAddress(session.PCAddress) != normalizeSessionAddress(pc.Address) {
+		return Session{}, errors.New("billing device returned a session for a different system endpoint")
+	}
+	if err := billingStore.mergeSyncedSessions(session.DeviceID, []Session{session}); err != nil {
+		return Session{}, fmt.Errorf("session started on %s, but its billing record could not be saved to this dashboard: %w", pc.Name, err)
+	}
+	return session, nil
+}
+
+func extendSessionForDashboard(req ExtendSessionRequest) (ExtendSessionResponse, error) {
+	return extendSessionForDashboardContext(context.Background(), req)
+}
+
+func extendSessionForDashboardContext(ctx context.Context, req ExtendSessionRequest) (ExtendSessionResponse, error) {
+	pc, ok := store.find(req.PCID)
+	if !ok && req.PCAddress != "" {
+		pc, ok = registeredPCByAddress(req.PCAddress)
+	}
+	if !ok {
+		return ExtendSessionResponse{}, errors.New("gaming system is not registered")
+	}
+	if req.PCAddress != "" && normalizeSessionAddress(req.PCAddress) != normalizeSessionAddress(pc.Address) {
+		return ExtendSessionResponse{}, errors.New("system ID and endpoint do not match")
+	}
+	if localBillingPC(pc) {
+		return extendSessionForSystem(req, true)
+	}
+	var response ExtendSessionResponse
+	if err := callBillingPeerContext(ctx, pc, http.MethodPost, "/internal/api/local/sessions/extend", req, &response); err != nil {
+		return ExtendSessionResponse{}, err
+	}
+	if response.SessionFound && response.Session != nil {
+		if err := billingStore.mergeSyncedSessions(response.Session.DeviceID, []Session{*response.Session}); err != nil {
+			return ExtendSessionResponse{}, fmt.Errorf("timer and device billing were updated, but this dashboard could not save the synchronized record: %w", err)
+		}
+	}
+	return response, nil
+}
+
+func updateSessionForDashboard(id, action string, minutes, amount int) (Session, error) {
+	return updateSessionForDashboardContext(context.Background(), id, action, minutes, amount)
+}
+
+func updateSessionForDashboardContext(ctx context.Context, id, action string, minutes, amount int) (Session, error) {
+	session, err := billingStore.sessionByID(id)
+	if err != nil {
+		return Session{}, err
+	}
+	pc, ok := store.find(session.PCID)
+	if !ok || normalizeSessionAddress(pc.Address) != normalizeSessionAddress(session.PCAddress) {
+		return Session{}, errors.New("the session's exact system endpoint is not registered; refusing to update another record")
+	}
+	if localBillingPC(pc) {
+		if action == "close" {
+			return closeOwnedSession(id, session, pc)
+		}
+		return billingStore.update(id, action, minutes, amount)
+	}
+	var updated Session
+	payload := struct {
+		PCID      string `json:"pc_id"`
+		PCAddress string `json:"pc_address"`
+		DeviceID  string `json:"device_id"`
+		Minutes   int    `json:"minutes"`
+		Amount    int    `json:"amount"`
+	}{PCID: session.PCID, PCAddress: session.PCAddress, DeviceID: session.DeviceID, Minutes: minutes, Amount: amount}
+	if err := callBillingPeerContext(ctx, pc, http.MethodPost, "/internal/api/local/sessions/"+url.PathEscape(id)+"/"+url.PathEscape(action), payload, &updated); err != nil {
+		return Session{}, err
+	}
+	if err := billingStore.mergeSyncedSessions(updated.DeviceID, []Session{updated}); err != nil {
+		return Session{}, fmt.Errorf("the owning PC updated the bill, but this dashboard could not save the synchronized record: %w", err)
+	}
+	return updated, nil
+}
+
+// closeOwnedSession stops the owning timer before committing its closed record.
+// If the workbook write fails, restore the timer snapshot so the open session remains usable.
+func closeOwnedSession(id string, session Session, pc PC) (Session, error) {
+	billingCloseMu.Lock()
+	defer billingCloseMu.Unlock()
+	current, err := billingStore.sessionByID(id)
+	if err != nil {
+		return Session{}, err
+	}
+	if current.Status != "open" {
+		return Session{}, apiError(http.StatusConflict, errors.New("session is already closed"))
+	}
+	if current.DeviceID != session.DeviceID || current.PCID != pc.ID ||
+		normalizeSessionAddress(current.PCAddress) != normalizeSessionAddress(pc.Address) {
+		return Session{}, apiError(http.StatusConflict, errors.New("session ID and owning PC do not match"))
+	}
+	previous, err := getTimerStatus(pc.Address)
+	if err != nil {
+		return Session{}, apiError(http.StatusBadGateway, fmt.Errorf("could not read timer status for %s before closing: %w", pc.Name, err))
+	}
+	if err := timerAction(pc.Address, "reset", 0); err != nil {
+		if restoreErr := restoreTimerStatus(pc.Address, previous); restoreErr != nil {
+			return Session{}, apiError(http.StatusBadGateway, fmt.Errorf("could not stop timer for %s: %v; restoring the prior timer state also failed: %w", pc.Name, err, restoreErr))
+		}
+		return Session{}, apiError(http.StatusBadGateway, fmt.Errorf("could not stop timer for %s; prior timer state was restored: %w", pc.Name, err))
+	}
+	closed, err := billingStore.update(id, "close", 0, 0)
+	if err != nil {
+		if restoreErr := restoreTimerStatus(pc.Address, previous); restoreErr != nil {
+			return Session{}, apiError(http.StatusInternalServerError, fmt.Errorf("could not save closed session: %v; timer restore also failed: %w", err, restoreErr))
+		}
+		return Session{}, apiError(http.StatusInternalServerError, fmt.Errorf("could not save closed session; timer was restored: %w", err))
+	}
+	if err := updateBillingSessionLink(pc, id, true); err != nil {
+		logf("billing", "session %s closed on pc_id=%s but timer billing link cleanup failed: %v", id, pc.ID, err)
+	}
+	return closed, nil
+}
+
+func localSessionHandler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/internal/api/local/sessions" {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST required"})
+			return
+		}
+		var request StartSessionRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&request); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid session data"})
+			return
+		}
+		pc, ok := store.find(request.PCID)
+		if !ok || !localBillingPC(pc) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "session endpoint is not owned by this billing device"})
+			return
+		}
+		session, err := startBillingSession(request)
+		if err != nil {
+			writeBillingError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, session)
+		return
+	}
+	if r.URL.Path == "/internal/api/local/sessions/extend" {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST required"})
+			return
+		}
+		var request ExtendSessionRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&request); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid extension request"})
+			return
+		}
+		pc, ok := store.find(request.PCID)
+		if !ok && request.PCAddress != "" {
+			pc, ok = registeredPCByAddress(request.PCAddress)
+		}
+		if !ok || !localBillingPC(pc) || (request.PCAddress != "" && normalizeSessionAddress(request.PCAddress) != normalizeSessionAddress(pc.Address)) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "session endpoint is not owned by this billing device"})
+			return
+		}
+		response, err := extendSessionForSystem(request, true)
+		if err != nil {
+			writeBillingError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, response)
+		return
+	}
+	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/internal/api/local/sessions/"), "/"), "/")
+	if len(parts) != 2 || r.Method != http.MethodPost {
+		http.NotFound(w, r)
+		return
+	}
+	var body struct {
+		PCID      string `json:"pc_id"`
+		PCAddress string `json:"pc_address"`
+		DeviceID  string `json:"device_id"`
+		Minutes   int    `json:"minutes"`
+		Amount    int    `json:"amount"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid session update"})
+		return
+	}
+	current, err := billingStore.sessionByID(parts[0])
+	if err != nil {
+		writeBillingError(w, err)
+		return
+	}
+	if current.PCID != body.PCID ||
+		normalizeSessionAddress(current.PCAddress) != normalizeSessionAddress(body.PCAddress) ||
+		(current.DeviceID != "" && current.DeviceID != body.DeviceID) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "session ID, device ID, and system endpoint do not match"})
+		return
+	}
+	var session Session
+	if parts[1] == "close" {
+		pc, ok := store.find(current.PCID)
+		if !ok || normalizeSessionAddress(pc.Address) != normalizeSessionAddress(current.PCAddress) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "session endpoint is not owned by this billing device"})
+			return
+		}
+		session, err = closeOwnedSession(parts[0], current, pc)
+	} else {
+		session, err = billingStore.update(parts[0], parts[1], body.Minutes, body.Amount)
+	}
+	if err != nil {
+		writeBillingError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, session)
+}
+
+func extendSessionHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	var req ExtendSessionRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid extension request"})
+		return
+	}
+	resp, err := extendSessionForDashboardContext(r.Context(), req)
+	if err != nil {
+		writeBillingError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func internalExtensionHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST required"})
+		return
+	}
+	var req ExtendSessionRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid extension request"})
+		return
+	}
+	pc, ok := registeredPCByAddress(req.PCAddress)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "extension endpoint is not registered"})
+		return
+	}
+	req.PCID = pc.ID
+	resp, err := extendSessionForSystem(req, true)
+	if err != nil {
+		writeBillingError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func registerBillingHandlers(mux *http.ServeMux) {
+	mux.HandleFunc("/api/pricing", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "GET required", 405)
+			return
+		}
+		writeJSON(w, 200, pricingCatalog())
+	})
+	mux.HandleFunc("/api/billing/summary", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, billingStore.summary()) })
+	mux.HandleFunc("/api/billing/download", downloadBilling)
+	mux.HandleFunc("/api/billing/sync", billingSyncHandler)
+	mux.HandleFunc("/api/billing/report", billingReportHandler)
+	mux.HandleFunc("/internal/api/billing/sync/pending", billingSyncPendingHandler)
+	mux.HandleFunc("/internal/api/billing/sync/ack", billingSyncAckHandler)
+	mux.HandleFunc("/internal/api/local/sessions", localSessionHandler)
+	mux.HandleFunc("/internal/api/local/sessions/", localSessionHandler)
+	mux.HandleFunc("/api/sessions/extend", extendSessionHandler)
+	mux.HandleFunc("/internal/api/sessions/extend", internalExtensionHandler)
+	mux.HandleFunc("/api/sessions", sessionsHandler)
+	mux.HandleFunc("/api/sessions/", sessionActionHandler)
+}
+func sessionsHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		x, err := billingStore.sessions(r.URL.Query().Get("search"), r.URL.Query().Get("payment_status"), r.URL.Query().Get("status"))
+		if err != nil {
+			writeBillingError(w, err)
+			return
+		}
+		writeJSON(w, 200, x)
+	case http.MethodPost:
+		var q StartSessionRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&q); err != nil {
+			writeJSON(w, 400, map[string]string{"error": "invalid session data"})
+			return
+		}
+		x, err := startBillingSessionForDashboardContext(r.Context(), q)
+		if err != nil {
+			writeBillingError(w, err)
+			return
+		}
+		writeJSON(w, 201, x)
+	default:
+		http.Error(w, "GET or POST required", 405)
+	}
+}
+
+func sessionActionHandler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/api/sessions/extend" {
+		extendSessionHandler(w, r)
+		return
+	}
+	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/sessions/"), "/"), "/")
+	if len(parts) == 1 && parts[0] == "extend" {
+		extendSessionHandler(w, r)
+		return
+	}
+	if len(parts) != 2 || r.Method != http.MethodPost {
+		http.NotFound(w, r)
+		return
+	}
+	var body struct {
+		Minutes int `json:"minutes"`
+		Amount  int `json:"amount"`
+	}
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body) != nil {
+		writeJSON(w, 400, map[string]string{"error": "invalid session update"})
+		return
+	}
+	x, err := updateSessionForDashboardContext(r.Context(), parts[0], parts[1], body.Minutes, body.Amount)
+	if err != nil {
+		writeBillingError(w, err)
+		return
+	}
+	writeJSON(w, 200, x)
+}
+func downloadBilling(w http.ResponseWriter, r *http.Request) {
+	billingStore.mu.Lock()
+	defer billingStore.mu.Unlock()
+	if err := billingStore.require(); err != nil {
+		writeBillingError(w, err)
+		return
+	}
+	f, err := billingStore.openLocked()
+	if err != nil {
+		writeBillingError(w, err)
+		return
+	}
+	defer f.Close()
+	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	w.Header().Set("Content-Disposition", "attachment; filename=billing.xlsx")
+	if _, err = f.WriteTo(w); err != nil {
+		logf("billing", "workbook download failed: %v", err)
+	}
+}
+func writeBillingError(w http.ResponseWriter, err error) {
+	status := http.StatusBadRequest
+	var httpErr *billingHTTPError
+	if errors.As(err, &httpErr) {
+		status = httpErr.Status
+	}
+	writeJSON(w, status, map[string]string{"error": err.Error()})
+}
