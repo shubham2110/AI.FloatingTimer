@@ -97,7 +97,7 @@ func distributePeers(ctx context.Context, peers []PC) []DistributionResult {
 					if err == nil {
 						req.Header.Set("Content-Type", "application/json")
 						var response *http.Response
-						response, err = timerHTTP.Do(req)
+						response, err = monitoredHTTPDo(req, "peer-distribution", peer.ID)
 						if err == nil {
 							response.Body.Close()
 							if response.StatusCode != http.StatusOK {

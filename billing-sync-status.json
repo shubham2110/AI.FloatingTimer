@@ -1,0 +1,83 @@
+[
+  {
+    "device_id": "PC-d36d370314439975ea85c1bc488a70b5",
+    "name": "Sarvagya",
+    "endpoint": "http://10.0.23.158:18082",
+    "online": true,
+    "pending_records": 0,
+    "last_attempt_at": "2026-10-31T13:57:03.2305905+05:30",
+    "last_successful_sync_at": "2026-10-31T13:57:03.2305905+05:30"
+  },
+  {
+    "device_id": "unavailable-8b38c3ed7e9ea0af",
+    "name": "PC-4",
+    "endpoint": "http://192.168.1.7:18082",
+    "online": false,
+    "pending_records": 0,
+    "last_attempt_at": "2026-10-31T13:57:03.3226045+05:30",
+    "error": "billing device PC-4 request GET http://192.168.1.7:18082/internal/api/billing/sync/pending returned HTTP 404: 404 page not found"
+  },
+  {
+    "device_id": "unavailable-4e464992f49eceec",
+    "name": "PC1-PG-SaxenaG1",
+    "endpoint": "http://192.168.1.4:18082",
+    "online": false,
+    "pending_records": 0,
+    "last_attempt_at": "2026-10-31T13:57:03.3226045+05:30",
+    "error": "billing device PC1-PG-SaxenaG1 request GET http://192.168.1.4:18082/internal/api/billing/sync/pending returned HTTP 404: 404 page not found"
+  },
+  {
+    "device_id": "unavailable-c52dc7dc1a405e81",
+    "name": "PC3",
+    "endpoint": "http://192.168.1.13:18082",
+    "online": false,
+    "pending_records": 0,
+    "last_attempt_at": "2026-10-31T13:57:03.3226045+05:30",
+    "error": "billing device PC3 request GET http://192.168.1.13:18082/internal/api/billing/sync/pending returned HTTP 404: 404 page not found"
+  },
+  {
+    "device_id": "unavailable-1303054c7c6ae56d",
+    "name": "PC2-PG-SKV",
+    "endpoint": "http://192.168.1.5:18082",
+    "online": false,
+    "pending_records": 0,
+    "last_attempt_at": "2026-10-31T13:57:03.3226045+05:30",
+    "error": "billing device PC2-PG-SKV request GET http://192.168.1.5:18082/internal/api/billing/sync/pending returned HTTP 404: 404 page not found"
+  },
+  {
+    "device_id": "unavailable-3ac1d45620fd8082",
+    "name": "PC1-PG-SaxenaG1",
+    "endpoint": "http://192.168.1.3:18082",
+    "online": false,
+    "pending_records": 0,
+    "last_attempt_at": "2026-10-31T13:57:03.3226045+05:30",
+    "error": "could not reach billing device PC1-PG-SaxenaG1 at GET http://192.168.1.3:18082/internal/api/billing/sync/pending: Get \"http://192.168.1.3:18082/internal/api/billing/sync/pending\": context deadline exceeded (Client.Timeout exceeded while awaiting headers)"
+  },
+  {
+    "device_id": "unavailable-4b399054fd88f66a",
+    "name": "PC-4",
+    "endpoint": "http://169.254.49.65:18082",
+    "online": false,
+    "pending_records": 0,
+    "last_attempt_at": "2026-10-31T13:57:03.3216045+05:30",
+    "error": "could not reach billing device PC-4 at GET http://169.254.49.65:18082/internal/api/billing/sync/pending: Get \"http://169.254.49.65:18082/internal/api/billing/sync/pending\": context deadline exceeded (Client.Timeout exceeded while awaiting headers)"
+  },
+  {
+    "device_id": "unavailable-c4205aab10809ae0",
+    "name": "PC2-SKV",
+    "endpoint": "http://192.168.1.11:18082",
+    "online": false,
+    "pending_records": 0,
+    "last_attempt_at": "2026-10-31T13:57:03.3226045+05:30",
+    "error": "could not reach billing device PC2-SKV at GET http://192.168.1.11:18082/internal/api/billing/sync/pending: Get \"http://192.168.1.11:18082/internal/api/billing/sync/pending\": context deadline exceeded (Client.Timeout exceeded while awaiting headers)"
+  },
+  {
+    "device_id": "unavailable-039ee58309d9f584",
+    "name": "PC-4",
+    "endpoint": "http://169.254.7.181:18082",
+    "online": false,
+    "pending_records": 0,
+    "last_attempt_at": "2026-10-31T13:57:03.3226045+05:30",
+    "error": "could not reach billing device PC-4 at GET http://169.254.7.181:18082/internal/api/billing/sync/pending: Get \"http://169.254.7.181:18082/internal/api/billing/sync/pending\": context deadline exceeded (Client.Timeout exceeded while awaiting headers)"
+  }
+]
