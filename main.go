@@ -18,12 +18,16 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image/color"
+	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,6 +38,7 @@ import (
 	"time"
 	"unsafe"
 
+	"overlay-timer/internal/httpcheck"
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/canvas"
@@ -140,6 +145,7 @@ type AppConfig struct {
 	FriendlyName          string                 `json:"friendly_name"`
 	TimerPort             int                    `json:"timer_port"`
 	UIDiscoveryPort       int                    `json:"ui_discovery_port"`
+	Billing               BillingConfig          `json:"billing"`
 	Discovery             DiscoveryConfig        `json:"discovery"`
 	OnBehalfOf            []OnBehalfConfig       `json:"on_behalf_of"`
 	SpecialCommands       []SpecialCommandConfig `json:"special_commands"`
@@ -154,6 +160,7 @@ func defaultAppConfig() AppConfig {
 		ForceKillAfterSeconds: 2,
 		TimerPort:             DefaultTimerPort,
 		UIDiscoveryPort:       DefaultUIPort,
+		Billing:               BillingConfig{Enabled: true},
 		SpecialCommands:       []SpecialCommandConfig{},
 		CommandTimeoutSeconds: 10,
 		Discovery: DiscoveryConfig{
@@ -361,6 +368,7 @@ func normalizeAppConfig() {
 	if appConfig.ForceKillAfterSeconds < 0 {
 		appConfig.ForceKillAfterSeconds = 0
 	}
+	normalizeBillingConfig()
 }
 
 func configuredFriendlyName() string {
@@ -718,6 +726,7 @@ func startBackgroundAPI(listener net.Listener) {
 		writeJSON(w, http.StatusOK, localNodeIdentity())
 	})
 	registerTimerCommands(http.DefaultServeMux, "", applyLocalAction)
+	setBillingSessionLinkHandler(http.DefaultServeMux, "/billing-session", localRegistryPC().Address)
 	registerSpecialCommands(http.DefaultServeMux, "", appConfig.SpecialCommands, appConfig.CommandTimeoutSeconds,
 		localRegistryPC(), &activityLog)
 	registerOnBehalfHandlers(http.DefaultServeMux)
@@ -779,7 +788,7 @@ func startBackgroundAPI(listener net.Listener) {
 		writeJSON(w, http.StatusOK, map[string]interface{}{"status": "success", "drag_enabled": *request.Enabled})
 	})
 
-	err := http.Serve(listener, cors(http.DefaultServeMux))
+	err := http.Serve(listener, requestLogMiddleware(cors(http.DefaultServeMux)))
 	logf("http", "Serve RETURNED (server stopped): %v", err)
 }
 
@@ -869,8 +878,140 @@ func setRunning(running bool) {
 	applyLocalAction(action, 0)
 }
 
-func addTime(seconds int) int { return applyLocalAction("tweak", seconds) }
-func resetTimer()             { applyLocalAction("reset", 0) }
+func addTime(seconds int) int {
+	if seconds <= 0 {
+		return applyLocalAction("tweak", seconds)
+	}
+	handled, remaining, err := notifyManagerExtension(seconds)
+	if err != nil {
+		logf("billing", "could not synchronize timer extension of %d seconds: %v", seconds, err)
+		if currentApp := fyne.CurrentApp(); currentApp != nil {
+			currentApp.SendNotification(&fyne.Notification{
+				Title:   "Billing extension failed",
+				Content: err.Error(),
+			})
+		}
+		state.Lock()
+		remaining = state.Remaining
+		state.Unlock()
+		return remaining
+	}
+	if handled {
+		return remaining
+	}
+	return applyLocalAction("tweak", seconds)
+}
+
+func notifyManagerExtension(seconds int) (bool, int, error) {
+	localPC := localRegistryPC()
+	if registeredPC, ok := registeredPCByAddress(localPC.Address); ok {
+		localPC = registeredPC
+	}
+	requestID, err := newExtensionRequestID()
+	if err != nil {
+		return false, 0, fmt.Errorf("could not generate extension request ID: %w", err)
+	}
+	extension := ExtendSessionRequest{
+		PCID: localPC.ID, PCAddress: localPC.Address, Seconds: seconds, RequestID: requestID,
+	}
+	if billingStore.enabled {
+		result, err := extendSessionForSystem(extension, true)
+		if err != nil {
+			return false, 0, err
+		}
+		return result.SessionFound, result.RemainingSeconds, nil
+	}
+	if link, ok := billingSessionLinkForEndpoint(localPC.Address); ok {
+		extension.SessionID = link.SessionID
+		payload, err := json.Marshal(extension)
+		if err != nil {
+			return false, 0, err
+		}
+		req, err := http.NewRequest(http.MethodPost, link.ManagerEndpoint, bytes.NewReader(payload))
+		if err != nil {
+			return false, 0, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := monitoredHTTPDo(req, "billing-session-extension", localPC.ID)
+		if err != nil {
+			return false, 0, fmt.Errorf("billing synchronization could not be confirmed: %w", err)
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		if err != nil {
+			return false, 0, fmt.Errorf("could not read billing response: %w", err)
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			var responseError struct {
+				Error string `json:"error"`
+			}
+			_ = json.Unmarshal(body, &responseError)
+			return false, 0, fmt.Errorf("billing service returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(responseError.Error))
+		}
+		var result ExtendSessionResponse
+		if err := httpcheck.DecodeJSON(body, resp.Header.Get("Content-Type"), &result); err != nil {
+			return false, 0, fmt.Errorf("invalid billing response: %w", err)
+		}
+		return result.SessionFound, result.RemainingSeconds, nil
+	}
+	var failures []string
+	for _, peer := range store.list() {
+		if peer.UIPort > 0 && !peer.Inactive && !isLocalPeer(peer) {
+			u, err := url.Parse(peer.Address)
+			if err != nil {
+				failures = append(failures, fmt.Sprintf("%s: invalid address: %v", peer.Name, err))
+				continue
+			}
+			endpoint := fmt.Sprintf("http://%s/internal/api/sessions/extend", net.JoinHostPort(u.Hostname(), strconv.Itoa(peer.UIPort)))
+			payload, err := json.Marshal(extension)
+			if err != nil {
+				return false, 0, err
+			}
+			req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
+			if err != nil {
+				failures = append(failures, fmt.Sprintf("%s: %v", peer.Name, err))
+				continue
+			}
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := monitoredHTTPDo(req, "billing-session-extension-forward", peer.ID)
+			if err != nil {
+				failures = append(failures, fmt.Sprintf("%s: %v", peer.Name, err))
+				continue
+			}
+			body, readErr := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+			closeErr := resp.Body.Close()
+			if err := errors.Join(readErr, closeErr); err != nil {
+				failures = append(failures, fmt.Sprintf("%s: could not read billing response: %v", peer.Name, err))
+				continue
+			}
+			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				var responseError struct {
+					Error string `json:"error"`
+				}
+				_ = json.Unmarshal(body, &responseError)
+				if strings.Contains(strings.ToLower(responseError.Error), "billing is disabled") {
+					continue
+				}
+				failures = append(failures, fmt.Sprintf("%s: billing service returned HTTP %d: %s", peer.Name, resp.StatusCode, strings.TrimSpace(responseError.Error)))
+				continue
+			}
+			var result ExtendSessionResponse
+			if err := json.Unmarshal(body, &result); err != nil {
+				failures = append(failures, fmt.Sprintf("%s: invalid billing response: %v", peer.Name, err))
+				continue
+			}
+			if result.SessionFound {
+				return true, result.RemainingSeconds, nil
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return false, 0, fmt.Errorf("billing synchronization could not be confirmed: %s", strings.Join(failures, "; "))
+	}
+	return false, 0, nil
+}
+
+func resetTimer() { applyLocalAction("reset", 0) }
 
 func showTimeUpForced() { displayTimeUp(true) }
 func showTimeUp()       { displayTimeUp(false) }
