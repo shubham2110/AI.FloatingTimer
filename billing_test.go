@@ -269,7 +269,7 @@ func newBillingTimerServer(t *testing.T, failPlay bool) (*httptest.Server, *sync
 			state.IsRunning = false
 			state.TimerStatus = "paused"
 			mu.Unlock()
-		case "/1/reset":
+		case "/1/reset", "/1/" + resetForBilling:
 			mu.Lock()
 			state.RemainingSeconds = 0
 			state.IsRunning = false

@@ -32,7 +32,7 @@ func (c *Countdown) apply(action string, value int) {
 		c.IsRunning = action == "play"
 	case "toggle":
 		c.IsRunning = !c.IsRunning
-	case "reset":
+	case "reset", resetForBilling:
 		c.Remaining, c.IsRunning = 0, false
 	}
 }
@@ -91,8 +91,10 @@ func timerParameter(r *http.Request, action string) (int, error) {
 
 var timerActions = []string{"set", "tweak", "play", "pause", "toggle", "reset", "show", "hide", "dismiss"}
 
+const resetForBilling = "reset-for-billing"
+
 func registerTimerCommands(mux *http.ServeMux, prefix string, apply func(string, int) int) {
-	for _, action := range timerActions {
+	for _, action := range append(append([]string(nil), timerActions...), resetForBilling) {
 		mux.HandleFunc(prefix+"/"+action, func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodPost {
 				writeJSON(w, 405, map[string]string{"message": "POST required"})

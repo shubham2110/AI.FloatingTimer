@@ -889,7 +889,7 @@ func applyLocalAction(action string, value int) int {
 		fmt.Sprint(value), "success", http.StatusOK, fmt.Sprintf("remaining_seconds=%d", remaining))
 	if action == "show" {
 		showTimeUpForced()
-	} else {
+	} else if action != resetForBilling {
 		hideTimeUp()
 	}
 	return remaining

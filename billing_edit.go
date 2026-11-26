@@ -12,24 +12,25 @@ import (
 )
 
 type billEdit struct {
-	PaymentOnly bool   `json:"payment_only,omitempty"`
-	Snacks      *int   `json:"snacks,omitempty"`
-	Remove      bool   `json:"remove"`
-	Customer    string `json:"customer_name"`
-	PCID        string `json:"pc_id"`
-	PCName      string `json:"pc_name"`
-	PCAddress   string `json:"pc_address"`
-	Category    string `json:"category"`
-	Players     int    `json:"players"`
-	Started     string `json:"started_at"`
-	Ended       string `json:"ended_at"`
-	Purchased   int    `json:"purchased_minutes"`
-	Additional  int    `json:"additional_minutes"`
-	Spent       int    `json:"spent_minutes"`
-	Billed      int    `json:"final_amount"`
-	Paid        int    `json:"amount_paid"`
-	PaymentAt   string `json:"payment_at"`
-	Version     string `json:"updated_at"`
+	ReconcileTotal bool   `json:"reconcile_total,omitempty"`
+	PaymentOnly    bool   `json:"payment_only,omitempty"`
+	Snacks         *int   `json:"snacks,omitempty"`
+	Remove         bool   `json:"remove"`
+	Customer       string `json:"customer_name"`
+	PCID           string `json:"pc_id"`
+	PCName         string `json:"pc_name"`
+	PCAddress      string `json:"pc_address"`
+	Category       string `json:"category"`
+	Players        int    `json:"players"`
+	Started        string `json:"started_at"`
+	Ended          string `json:"ended_at"`
+	Purchased      int    `json:"purchased_minutes"`
+	Additional     int    `json:"additional_minutes"`
+	Spent          int    `json:"spent_minutes"`
+	Billed         int    `json:"final_amount"`
+	Paid           int    `json:"amount_paid"`
+	PaymentAt      string `json:"payment_at"`
+	Version        string `json:"updated_at"`
 }
 
 func (s *BillingStore) editBill(id string, e billEdit) (Session, error) {
@@ -56,13 +57,23 @@ func (s *BillingStore) editBill(id string, e billEdit) (Session, error) {
 			if e.Paid < 0 || e.Paid > 9999999 {
 				return Session{}, errors.New("enter a valid amount paid in whole rupees")
 			}
-			if old.AmountPaid == e.Paid {
+			if e.ReconcileTotal && e.Paid < old.Snacks {
+				return Session{}, errors.New("amount paid is below the snack charge; edit the snack charge first")
+			}
+			if old.AmountPaid == e.Paid && (!e.ReconcileTotal || old.FinalAmount == e.Paid) {
 				return old, nil
 			}
 			now := billingSyncTime()
-			old.payments = append(old.payments, paymentRecord{ID: "C-" + now, Timestamp: now, Amount: e.Paid - old.AmountPaid, Status: "correction"})
-			old.AmountPaid = e.Paid
-			old.PaymentAt = now
+			if old.AmountPaid != e.Paid {
+				old.payments = append(old.payments, paymentRecord{ID: "C-" + now, Timestamp: now, Amount: e.Paid - old.AmountPaid, Status: "correction"})
+				old.AmountPaid = e.Paid
+				old.PaymentAt = now
+			}
+			if e.ReconcileTotal {
+				gameAmount := e.Paid - old.Snacks
+				old.ManualPrice = &gameAmount
+				old.FinalAmount = e.Paid
+			}
 			old.PaymentStatus = "unpaid"
 			if e.Paid >= old.FinalAmount {
 				old.PaymentStatus = "paid"

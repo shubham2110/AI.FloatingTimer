@@ -2054,7 +2054,7 @@ func closeOwnedSessionAt(id string, session Session, pc PC, stopped time.Time) (
 	if !stopped.IsZero() && (current.UpdatedAt != session.UpdatedAt || !shouldAutoCloseTimer(previous)) {
 		return Session{}, errors.New("session changed or timer resumed")
 	}
-	if err := timerAction(pc.Address, "reset", 0); err != nil {
+	if err := timerAction(pc.Address, resetForBilling, 0); err != nil {
 		if restoreErr := restoreTimerStatus(pc.Address, previous); restoreErr != nil {
 			return Session{}, apiError(http.StatusBadGateway, fmt.Errorf("could not stop timer for %s: %v; restoring the prior timer state also failed: %w", pc.Name, err, restoreErr))
 		}

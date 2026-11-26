@@ -948,6 +948,8 @@
               
             </div>
           </div>
+          <button id="reconcileHistory" type="button" onclick="reconcileOlderBills(this)">Reconcile older bills in current filter</button>
+          <small id="reconcileHistoryStatus" role="status"></small>
           <div class="table-wrap">
             <table>
               <thead>
@@ -2937,6 +2939,7 @@
           $("historyPC").value = selectedPC;
           renderHistory();
         } catch(e) {
+          olderBillsToReconcile=[];
           $("historyRows").innerHTML = `<tr><td colspan='10'>${esc(e.message)}</td></tr>`;
         }
       }
@@ -2950,6 +2953,21 @@
         return `${parts.year}-${parts.month}-${parts.day}`;
       }
 
+      let olderBillsToReconcile=[];
+      async function reconcileOlderBills(button) {
+        const bills=[...olderBillsToReconcile];
+        if(!bills.length || !confirm("Adjust "+bills.length+" older bills to the amounts already recorded as paid? Snack charges will stay the same."))return;
+        button.disabled=true;
+        let saved=0,failed=0,firstError="";
+        try {
+          for(const bill of bills){
+            try {await writePaid(bill,bill.amount_paid,bill.updated_at,true);saved++;}
+            catch(e){failed++;firstError ||= e.message;}
+          }
+          $("reconcileHistoryStatus").textContent=saved+" reconciled"+(failed?" · "+failed+" failed. "+firstError:".");
+          await loadBilling();
+        } finally {button.disabled=false;}
+      }
       function renderHistory() {
         const search = $("historySearch").value.trim().toLowerCase();
         const payment = $("historyPayment").value;
@@ -2960,6 +2978,13 @@
           (!payment || session.payment_status === payment) &&
           (!date || historySessionDate(session.started_at) === date) &&
           (!pcID || session.pc_id === pcID));
+        const today=billingTodayDate();
+        olderBillsToReconcile=rows.filter(x=>{
+          const day=historySessionDate(x.started_at);
+          return day && day<today && x.status==="closed" && !isStandaloneSnackRow(x) &&
+            x.amount_paid>0 && x.amount_paid>=(x.snacks||0) && x.amount_paid!==x.final_amount;
+        });
+        $("reconcileHistory").textContent="Reconcile older bills in current filter ("+olderBillsToReconcile.length+")";
         $("historyRows").innerHTML = rows.map(x => {
             const standaloneSnack = isStandaloneSnackRow(x);
             const payButton = !standaloneSnack && x.final_amount > x.amount_paid
@@ -3045,16 +3070,17 @@
         const row=todayBills.find(x=>x.id===id);
         paymentDrafts.set(id,{value:input.value,version:paymentDrafts.get(id)?.version||row.updated_at});
       }
-      async function writePaid(row,amount,version){
+      async function writePaid(row,amount,version,reconcileTotal=false){
         if(!Number.isSafeInteger(amount)||amount<0||amount>9999999)throw Error("Enter a whole-rupee payment from 0 to 9999999.");
-        await postCardSession("/api/sessions/"+encodeURIComponent(row.id)+"/edit",{pc_id:row.pc_id,payment_only:true,amount_paid:amount,updated_at:version});
+        await postCardSession("/api/sessions/"+encodeURIComponent(row.id)+"/edit",{pc_id:row.pc_id,payment_only:true,reconcile_total:reconcileTotal,amount_paid:amount,updated_at:version});
         paymentDrafts.delete(row.id);
       }
       async function saveRowPaid(id,button){
-        const draft=paymentDrafts.get(id),row=todayBills.find(x=>x.id===id);
-        if(!draft||!row)return;
+        const row=todayBills.find(x=>x.id===id);
+        if(!row)return;
+        const draft=paymentDrafts.get(id) || {value:String(row.amount_paid??0),version:row.updated_at};
         button.disabled=true;
-        try{await writePaid(row,draft.value.trim()===""?NaN:Number(draft.value),draft.version);$("todayPaymentStatus").textContent="Payment saved.";}
+        try{await writePaid(row,draft.value.trim()===""?NaN:Number(draft.value),draft.version,true);$("todayPaymentStatus").textContent="Payment and bill total saved.";}
         catch(e){$("todayPaymentStatus").textContent=e.message;if(draft.version!==row.updated_at)paymentDrafts.delete(id);}
         finally{await loadBilling();button.disabled=false;}
       }

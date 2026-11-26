@@ -70,3 +70,14 @@ func TestTimerRoutesShareValidationAndPreserveShowHideState(t *testing.T) {
 		})
 	}
 }
+
+func TestBillingResetPreservesOnBehalfAlert(t *testing.T) {
+	timer := &VirtualTimer{}
+	timer.Remaining = 30
+	timer.IsRunning = true
+	timer.AlertVisible = true
+	timer.applyAction(resetForBilling, 0)
+	if timer.Remaining != 0 || timer.IsRunning || !timer.AlertVisible {
+		t.Fatal("closing billing must stop the countdown and preserve the alert")
+	}
+}

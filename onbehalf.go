@@ -152,6 +152,12 @@ func registerOnBehalfHandlers(mux *http.ServeMux) {
 func (timer *VirtualTimer) applyAction(action string, value int) int {
 	timer.Lock()
 	timer.apply(action, value)
+	if action == resetForBilling {
+		remaining := timer.Remaining
+		timer.Unlock()
+		timer.log(action, "success", fmt.Sprintf("remaining_seconds=%d", remaining))
+		return remaining
+	}
 	timer.AlertVisible = action == "show"
 	hook := timer.Config.HideCommand
 	if timer.AlertVisible {

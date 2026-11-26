@@ -34,3 +34,23 @@ func TestBillEditorUpdatesFieldsAndMovesDailyRecord(t *testing.T) {
 		t.Fatal("accepted stale edit")
 	}
 }
+
+func TestInlinePaymentReconcilesBillWithoutChangingSnacks(t *testing.T) {
+	configureBillingTest(t)
+	old, err := billingStore.commitStart(Session{ID: "discount", Status: "closed", FinalAmount: 150, AmountPaid: 120, Snacks: 30}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	edit := billEdit{PaymentOnly: true, ReconcileTotal: true, Paid: 120, Version: old.UpdatedAt}
+	updated, err := billingStore.editBill(old.ID, edit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.FinalAmount != 120 || updated.AmountPaid != 120 || updated.Snacks != 30 || updated.ManualPrice == nil || *updated.ManualPrice != 90 || updated.PaymentStatus != "paid" {
+		t.Fatalf("bill %+v", updated)
+	}
+	edit.Paid, edit.Version = 29, updated.UpdatedAt
+	if _, err = billingStore.editBill(old.ID, edit); err == nil {
+		t.Fatal("accepted payment below snacks")
+	}
+}
