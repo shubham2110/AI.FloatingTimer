@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -353,6 +354,30 @@ func (s *BillingStore) sessions(search, payment string, statusFilter ...string) 
 		out = append(out, x)
 	}
 	return out, nil
+}
+
+func (s *BillingStore) customerNames() ([]string, error) {
+	sessions, err := s.sessions("", "")
+	if err != nil {
+		return nil, err
+	}
+	names := make(map[string]string)
+	for _, session := range sessions {
+		name := strings.TrimSpace(session.CustomerName)
+		if name == "" {
+			continue
+		}
+		key := strings.ToLower(name)
+		if _, exists := names[key]; !exists {
+			names[key] = name
+		}
+	}
+	result := make([]string, 0, len(names))
+	for _, name := range names {
+		result = append(result, name)
+	}
+	sort.Strings(result)
+	return result, nil
 }
 
 func (s *BillingStore) prepareStart(q StartSessionRequest) (Session, PC, error) {
@@ -1964,6 +1989,7 @@ func registerBillingHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/api/sessions/extend", extendSessionHandler)
 	mux.HandleFunc("/internal/api/sessions/extend", internalExtensionHandler)
 	mux.HandleFunc("/api/sessions", sessionsHandler)
+	mux.HandleFunc("/api/customers", customerNamesHandler)
 	mux.HandleFunc("/api/sessions/", sessionActionHandler)
 }
 func sessionsHandler(w http.ResponseWriter, r *http.Request) {
@@ -1990,6 +2016,19 @@ func sessionsHandler(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "GET or POST required", 405)
 	}
+}
+
+func customerNamesHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "GET required"})
+		return
+	}
+	names, err := billingStore.customerNames()
+	if err != nil {
+		writeBillingError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, names)
 }
 
 func sessionActionHandler(w http.ResponseWriter, r *http.Request) {

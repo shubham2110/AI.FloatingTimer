@@ -901,3 +901,13 @@ test('zero is the default start and style controls persist independently',async(
  assert.deepEqual(JSON.parse(h.storage.get("overlay-timer-dashboard-view-v1")),{style:"experimental",showUnits:true});
  assert.equal(h.node("dashboard").getAttribute("data-style"),"experimental");
 });
+
+test('customer name suggestions are loaded from saved session names',async()=>{
+ const h=harness([sample("pc")]);
+ h.responses.set("/api/customers",["Alice & Bob","Casey"]);
+ h.start();await h.advance(0);
+ await h.run("loadCustomerNameSuggestions()");
+ assert.match(h.node("customerNameSuggestions").innerHTML,/Alice &amp; Bob/);
+ assert.match(h.node("customerNameSuggestions").innerHTML,/Casey/);
+ assert.match(h.node("sf-customer-pc").innerHTML||h.node("dashboardGrid").innerHTML,/list="customerNameSuggestions"/);
+});
