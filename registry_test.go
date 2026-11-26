@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -100,7 +101,7 @@ func TestRegistryConflictsConverge(t *testing.T) {
 		t.Fatal("local IDs changed")
 	}
 	left.ID, right.ID = "", ""
-	if left != right {
+	if !reflect.DeepEqual(left, right) {
 		t.Fatalf("metadata failed to converge: %+v %+v", left, right)
 	}
 	count, err := a.merge(b.snapshot())

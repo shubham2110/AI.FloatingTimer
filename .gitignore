@@ -33,3 +33,6 @@ OverlayTimer.download
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+/billing/
+/pricing.json

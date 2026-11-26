@@ -3,8 +3,6 @@
 package main
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,47 +13,13 @@ import (
 )
 
 func (s *BillingStore) ensureDeviceIDLocked() error {
-	if s.deviceID != "" {
-		if s.configuredID != "" && s.deviceID != s.configuredID {
-			return errors.New("configured billing device_id does not match this device's persisted ID")
-		}
-		return nil
-	}
-	path := filepath.Join(filepath.Dir(s.path), billingDeviceIDName)
-	if data, err := os.ReadFile(path); err == nil {
-		s.deviceID = strings.TrimSpace(string(data))
-		if s.deviceID == "" {
-			return errors.New("billing device ID file is empty")
-		}
-		if s.configuredID != "" && s.deviceID != s.configuredID {
-			return errors.New("configured billing device_id does not match this device's persisted ID")
-		}
-		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("could not read billing device ID: %w", err)
-	}
-	if s.configuredID != "" {
-		s.deviceID = s.configuredID
-	} else {
-		var randomID [16]byte
-		if _, err := rand.Read(randomID[:]); err != nil {
-			return fmt.Errorf("could not generate billing device ID: %w", err)
-		}
-		s.deviceID = "PC-" + hex.EncodeToString(randomID[:])
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(s.deviceID+"\n"), 0600); err != nil {
-		return fmt.Errorf("could not save billing device ID: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("could not install billing device ID: %w", err)
+	if s.deviceID == "" {
+		s.deviceID = configuredFriendlyName()
 	}
 	return nil
 }
-
 func (s *BillingStore) syncStatusPath() string {
-	return filepath.Join(filepath.Dir(s.path), billingSyncStateName)
+	return filepath.Join(s.path, billingSyncStateName)
 }
 
 func (s *BillingStore) loadSyncStatusesLocked() error {
@@ -118,14 +82,11 @@ func (s *BillingStore) pendingSync() (BillingSyncExport, error) {
 	if err != nil {
 		return BillingSyncExport{}, err
 	}
-	defer f.Close()
-	sessions, err := sessionsFromWorkbook(f)
-	if err != nil {
-		return BillingSyncExport{}, err
-	}
+
+	sessions := f.sessions
 	pending := make([]Session, 0)
 	for _, session := range sessions {
-		if session.DeviceID == "" {
+		if session.DeviceID == "" || previousDeviceName(session.DeviceID) {
 			session.DeviceID = s.deviceID
 		}
 		if session.SyncedUpdatedAt != session.UpdatedAt {
@@ -151,11 +112,8 @@ func (s *BillingStore) acknowledgeSync(ack BillingSyncAck) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer f.Close()
-	stored, err := storedSessionsFromWorkbook(f)
-	if err != nil {
-		return 0, err
-	}
+
+	stored := f.indexed()
 	acknowledgements := make(map[string]string, len(ack.Sessions))
 	for _, item := range ack.Sessions {
 		if item.ID == "" || item.UpdatedAt == "" {
@@ -179,7 +137,7 @@ func (s *BillingStore) acknowledgeSync(ack BillingSyncAck) (int, error) {
 			continue
 		}
 		session.SyncedUpdatedAt = updatedAt
-		if err := writeSessionRow(f, "Sessions", item.Row, session, true); err != nil {
+		if err := f.put(item.Row, session); err != nil {
 			return 0, err
 		}
 		changed = true
@@ -205,15 +163,14 @@ func (s *BillingStore) mergeSyncedSessions(deviceID string, incoming []Session) 
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	stored, err := storedSessionsFromWorkbook(f)
-	if err != nil {
-		return err
-	}
+
+	stored := f.indexed()
 	byKey := make(map[string]storedBillingSession, len(stored))
+	byID := make(map[string]storedBillingSession, len(stored))
 	for _, item := range stored {
 		key := item.Session.DeviceID + "\x00" + item.Session.ID
 		byKey[key] = item
+		byID[item.Session.ID] = item
 	}
 	candidates := make([]Session, 0, len(incoming))
 	candidateIndex := make(map[string]int, len(incoming))
@@ -236,14 +193,18 @@ func (s *BillingStore) mergeSyncedSessions(deviceID string, incoming []Session) 
 		candidateIndex[key] = len(candidates)
 		candidates = append(candidates, session)
 	}
-	rows, err := sessionRows(f)
-	if err != nil {
-		return err
-	}
+
 	changed := false
 	for _, session := range candidates {
 		key := deviceID + "\x00" + session.ID
-		if existing, exists := byKey[key]; exists {
+		existing, exists := byKey[key]
+		if !exists {
+			previous, ok := byID[session.ID]
+			if ok && previous.Session.CreatedAt != "" && previous.Session.CreatedAt == session.CreatedAt && billingPath(previous.Session.PCAddress) == billingPath(session.PCAddress) {
+				existing, exists = previous, true
+			}
+		}
+		if exists {
 			oldTime, oldErr := sessionTimestamp(existing.Session.UpdatedAt)
 			newTime, newErr := sessionTimestamp(session.UpdatedAt)
 			if oldErr != nil || newErr != nil {
@@ -253,21 +214,29 @@ func (s *BillingStore) mergeSyncedSessions(deviceID string, incoming []Session) 
 				continue
 			}
 			session.SyncedUpdatedAt = session.UpdatedAt
-			if err := writeSessionRow(f, "Sessions", existing.Row, session, true); err != nil {
+			oldDay, _ := billingDay(existing.Session)
+			day, err := billingDay(session)
+			if err != nil {
+				return err
+			}
+			if oldDay != day {
+				if err := s.saveBillEdit(f, existing.Row, session); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := f.put(existing.Row, session); err != nil {
 				return err
 			}
 			changed = true
 			continue
 		}
 		session.SyncedUpdatedAt = session.UpdatedAt
-		row := len(rows) + 1
-		if err := writeSessionRow(f, "Sessions", row, session, false); err != nil {
+		row := len(f.sessions)
+		if err := f.put(row, session); err != nil {
 			return err
 		}
-		if err := formatSessionDataRows(f, "Sessions", row, row); err != nil {
-			return err
-		}
-		rows = append(rows, nil)
+
 		changed = true
 	}
 	if changed {
@@ -286,11 +255,8 @@ func (s *BillingStore) sessionByID(id string) (Session, error) {
 	if err != nil {
 		return Session{}, err
 	}
-	defer f.Close()
-	sessions, err := sessionsFromWorkbook(f)
-	if err != nil {
-		return Session{}, err
-	}
+
+	sessions := f.sessions
 	var found *Session
 	for i := range sessions {
 		if sessions[i].ID != id {
@@ -317,15 +283,13 @@ func (s *BillingStore) report(date string) (BillingReport, error) {
 	if err != nil || parsedDate.Format("2006-01-02") != date {
 		return BillingReport{}, errors.New("date must use YYYY-MM-DD")
 	}
-	f, err := s.openLocked()
-	if err != nil {
+	f := &dailyLedger{}
+	err = f.readDay(filepath.Join(s.path, date+".csv"), date)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return BillingReport{}, err
 	}
-	defer f.Close()
-	sessions, err := sessionsFromWorkbook(f)
-	if err != nil {
-		return BillingReport{}, err
-	}
+
+	sessions := f.sessions
 	report := BillingReport{
 		Date: date, Timezone: billingTimezoneName,
 		Devices: append([]BillingDeviceStatus(nil), s.syncStatuses...),
@@ -340,6 +304,9 @@ func (s *BillingStore) report(date string) (BillingReport, error) {
 	pcIndex := make(map[string]int)
 	customers := make(map[string]struct{})
 	for _, session := range sessions {
+		if session.Status == "removed" {
+			continue
+		}
 		started, parseErr := sessionTimestamp(session.StartedAt)
 		if parseErr != nil || started.In(billingTimezone).Format("2006-01-02") != date {
 			continue

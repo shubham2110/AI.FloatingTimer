@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -21,31 +22,43 @@ import (
 )
 
 type NodeIdentity struct {
-	Service   string          `json:"service"`
-	Name      string          `json:"name"`
-	TimerPort int             `json:"timer_port"`
-	UIPort    int             `json:"ui_port"`
-	Timers    []TimerIdentity `json:"timers,omitempty"`
+	PricingCategories []string        `json:"pricing_categories"`
+	PricingGroup      string          `json:"pricing_group,omitempty"`
+	Service           string          `json:"service"`
+	Name              string          `json:"name"`
+	TimerPort         int             `json:"timer_port"`
+	UIPort            int             `json:"ui_port"`
+	Timers            []TimerIdentity `json:"timers,omitempty"`
 }
 
 type TimerIdentity struct {
-	ID              string           `json:"id"`
-	Name            string           `json:"name"`
-	Path            string           `json:"path"`
-	SpecialCommands []SpecialCommand `json:"special_commands"`
+	PricingCategories []string         `json:"pricing_categories"`
+	PricingGroup      string           `json:"pricing_group,omitempty"`
+	ID                string           `json:"id"`
+	Name              string           `json:"name"`
+	Path              string           `json:"path"`
+	SpecialCommands   []SpecialCommand `json:"special_commands"`
 }
 
 func localNodeIdentity() NodeIdentity {
-	identity := NodeIdentity{Service: "overlay-timer", Name: configuredFriendlyName(), TimerPort: appConfig.TimerPort, UIPort: appConfig.UIDiscoveryPort}
+	identity := NodeIdentity{PricingCategories: appConfig.PricingCategories, PricingGroup: appConfig.PricingGroup, Service: "overlay-timer", Name: configuredFriendlyName(), TimerPort: appConfig.TimerPort, UIPort: appConfig.UIDiscoveryPort}
 	identity.Timers = []TimerIdentity{{ID: "", Name: identity.Name, Path: "", SpecialCommands: specialCommandLabels(appConfig.SpecialCommands)}}
 	for _, timer := range virtualTimerList() {
-		identity.Timers = append(identity.Timers, TimerIdentity{ID: timer.Config.ID, Name: timer.Config.Name, Path: "/" + timer.Config.ID, SpecialCommands: specialCommandLabels(timer.Config.SpecialCommands)})
+		identity.Timers = append(identity.Timers, TimerIdentity{PricingCategories: timer.Config.PricingCategories, PricingGroup: timer.Config.PricingGroup, ID: timer.Config.ID, Name: editedName("/"+timer.Config.ID, timer.Config.Name), Path: "/" + timer.Config.ID, SpecialCommands: specialCommandLabels(timer.Config.SpecialCommands)})
+	}
+	if cfg := livePricing.Load(); cfg != nil {
+		identity.PricingGroup, identity.PricingCategories = cfg.Group, cfg.Categories
+		for i, t := range identity.Timers {
+			pricing := cfg.forPath(t.Path)
+			identity.Timers[i].PricingGroup = pricing.Group
+			identity.Timers[i].PricingCategories = pricing.Categories
+		}
 	}
 	return identity
 }
 
 func identityPCs(address string, identity NodeIdentity) []PC {
-	pcs := []PC{{ID: stablePCID(address), Name: identity.Name, Address: address, UIPort: identity.UIPort}}
+	pcs := []PC{{Owner: identity.Name, ID: stablePCID(address), Name: identity.Name, Address: address, PricingCategories: identity.PricingCategories, PricingGroup: identity.PricingGroup, UIPort: identity.UIPort}}
 	seen := map[string]bool{"": true}
 	for _, timer := range identity.Timers {
 		if timer.ID == "" && timer.Path == "" && timer.Name != "" {
@@ -60,7 +73,15 @@ func identityPCs(address string, identity NodeIdentity) []PC {
 			name = "Agent " + timer.ID
 		}
 		timerAddress := address + timer.Path
-		pcs = append(pcs, PC{ID: stablePCID(timerAddress), Name: name, Address: timerAddress, UIPort: identity.UIPort})
+		cats := timer.PricingCategories
+		if len(cats) == 0 && timer.PricingGroup == "" {
+			cats = identity.PricingCategories
+		}
+		group := timer.PricingGroup
+		if group == "" {
+			group = identity.PricingGroup
+		}
+		pcs = append(pcs, PC{Owner: identity.Name, ID: stablePCID(timerAddress), Name: name, Address: timerAddress, PricingCategories: cats, PricingGroup: group, UIPort: identity.UIPort})
 	}
 	return pcs
 }
@@ -91,7 +112,7 @@ func localIPv4s() []net.IP {
 	var result []net.IP
 	for _, address := range addresses {
 		ip, _, err := net.ParseCIDR(address.String())
-		if err == nil && ip.To4() != nil && !ip.IsLoopback() {
+		if err == nil && ip.To4() != nil && !ip.IsLoopback() && !excludedHost(ip.String()) {
 			result = append(result, ip.To4())
 		}
 	}
@@ -113,7 +134,7 @@ func localRegistryPC() PC {
 		host = ips[0].String()
 	}
 	address := fmt.Sprintf("http://%s:%d", host, appConfig.TimerPort)
-	return PC{ID: stablePCID(address), Name: configuredFriendlyName(), Address: address, UIPort: appConfig.UIDiscoveryPort}
+	return PC{Owner: configuredFriendlyName(), ID: stablePCID(address), Name: configuredFriendlyName(), Address: address, UIPort: appConfig.UIDiscoveryPort}
 }
 
 func observeLocalTimers() {
@@ -153,9 +174,25 @@ func registerDiscoveryHandlers(mux *http.ServeMux) {
 			writeJSON(w, 409, map[string]string{"error": "discovery already running"})
 			return
 		}
+		discoveryState.Lock()
+		discoveryState.last = DiscoveryResult{}
+		discoveryState.Unlock()
 		go performDiscovery(true)
 		writeJSON(w, 202, map[string]string{"status": "started"})
 	})
+	mux.HandleFunc("/api/discovery/clean-unselected", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST required", 405)
+			return
+		}
+		n, err := store.cleanUnselected()
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		writeJSON(w, 200, map[string]int{"removed": n})
+	})
+	mux.HandleFunc("/api/discovery/clean-offline", cleanOfflineHandler)
 	mux.HandleFunc("/api/discovery/peers", discoveryPeersHandler)
 	mux.HandleFunc("/api/discovery/distribute", distributeHandler)
 }
@@ -294,8 +331,9 @@ func configuredNetworks() []*net.IPNet {
 	return networks
 }
 
-func hostsForNetworks() []string {
-	blocked := blockedDiscoveryHosts()
+func hostsForNetworks() []string { return discoveryHosts(blockedDiscoveryHosts()) }
+
+func discoveryHosts(blocked map[string]bool) []string {
 	seen := map[string]bool{}
 	var hosts []string
 	for _, network := range configuredNetworks() {
@@ -311,7 +349,7 @@ func hostsForNetworks() []string {
 		for i := uint32(1); i+1 < count; i++ {
 			value := base + i
 			host := fmt.Sprintf("%d.%d.%d.%d", byte(value>>24), byte(value>>16), byte(value>>8), byte(value))
-			if !seen[host] && !blocked[host] {
+			if !excludedHost(host) && !seen[host] && !blocked[host] {
 				seen[host] = true
 				hosts = append(hosts, host)
 			}
@@ -332,7 +370,26 @@ func performDiscovery(manual bool) {
 		discoveryState.last = result
 		discoveryState.Unlock()
 	}()
-	hosts := hostsForNetworks()
+	targets := map[string]bool{}
+	blocked := map[string]bool{}
+	if !manual {
+		blocked = blockedDiscoveryHosts()
+	}
+	for _, host := range discoveryHosts(blocked) {
+		targets[fmt.Sprintf("http://%s:%d", host, appConfig.TimerPort)] = true
+	}
+	if manual {
+		for _, pc := range store.snapshot() {
+			u, err := url.Parse(pc.Address)
+			if err == nil && !excludedAddress(pc.Address) {
+				targets[u.Scheme+"://"+u.Host] = true
+			}
+		}
+	}
+	var hosts []string
+	for endpoint := range targets {
+		hosts = append(hosts, endpoint)
+	}
 	result.Scanned = len(hosts)
 	workers := appConfig.Discovery.MaximumConcurrency
 	jobs := make(chan string)
@@ -343,7 +400,7 @@ func performDiscovery(manual bool) {
 		go func() {
 			defer wg.Done()
 			for host := range jobs {
-				if pcs, ok := probeTimer(host); ok {
+				if pcs, ok := probeTimerEndpoint(host); ok {
 					found <- pcs
 				}
 			}
@@ -357,21 +414,60 @@ func performDiscovery(manual bool) {
 		wg.Wait()
 		close(found)
 	}()
+	live := map[string]PC{}
+	for _, pc := range identityPCs(localRegistryPC().Address, localNodeIdentity()) {
+		live[pc.Address] = pc
+	}
 	for pcs := range found {
 		result.HostsFound++
 		result.Found += len(pcs)
 		for _, pc := range pcs {
-			observePC(pc)
+			live[pc.Address] = pc
+			if !manual {
+				observePC(pc)
+			}
 		}
-		pullPeersFromPC(pcs[0])
+		if !manual {
+			pullPeersFromPC(pcs[0])
+		}
 	}
+	if manual {
+		if err := store.replaceDiscovery(live); err != nil {
+			result.Error = err.Error()
+		}
+		return
+	}
+	store.Lock()
+	previous := append([]PC(nil), store.PCs...)
+	changed := false
+	for i, pc := range store.PCs {
+		observed, seen := live[pc.Address]
+		if seen {
+			store.PCs[i].Missing = false
+			store.PCs[i].PricingCategories = observed.PricingCategories
+			store.PCs[i].PricingGroup = observed.PricingGroup
+		}
+		if !reflect.DeepEqual(store.PCs[i], pc) {
+			changed = true
+		}
+	}
+	if changed {
+		if err := store.commitLocked(previous); err != nil {
+			result.Error = err.Error()
+		}
+	}
+	store.Unlock()
 	logf("discovery", "complete manual=%v scanned=%d hosts=%d timers=%d", manual, result.Scanned, result.HostsFound, result.Found)
 }
 
-func probeTimer(host string) ([]PC, bool) {
+func probeTimerEndpoint(address string) ([]PC, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(appConfig.Discovery.ConnectTimeoutMilliseconds)*time.Millisecond)
 	defer cancel()
-	address := fmt.Sprintf("http://%s:%d", host, appConfig.TimerPort)
+	u, err := url.Parse(address)
+	if err != nil {
+		return nil, false
+	}
+	host := u.Hostname()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, address+"/identity", nil)
 	response, err := monitoredHTTPDo(req, "discovery-identity", "")
 	if err != nil {

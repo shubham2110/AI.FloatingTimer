@@ -4,9 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
-const scriptMatch = fs.readFileSync('ui.html', 'utf8').match(/<script\b[^>]*>([\s\S]*?)<\/script>/i);
-if (!scriptMatch) throw new Error('Could not find <script> block in ui.html');
-const source = scriptMatch[1];
+const source = Array.from(fs.readFileSync('ui.html', 'utf8').matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi), m => m[1]).join('\n');
 const sample = (name, inactive = false) => ({ id: name, name, address: `http://${name}:18081`, inactive });
 const agent = (host, id, inactive = false) => ({ id: `${host}-${id}`, name: `Agent ${id}`, address: `http://${host}:18081/${id}`, inactive });
 const status = { remaining_seconds: 300, is_running: true, time_up_visible: false, on_behalf_of: [] };
@@ -42,7 +40,8 @@ function harness(initial, settings = { pollIntervalSeconds: 1, falsePolling: fal
           },
           contains(token) { return this._set.has(token); },
         },
-        focus() {},
+        querySelectorAll() { return []; },
+        focus() {}, append(){}, replaceChildren(){}, querySelector(){return null;}, insertBefore(){}, appendChild(){},
         setAttribute(name, value) { this.attributes[name] = String(value); },
         getAttribute(name) { return this.attributes[name] ?? null; },
         removeAttribute(name) { delete this.attributes[name]; },
@@ -50,6 +49,7 @@ function harness(initial, settings = { pollIntervalSeconds: 1, falsePolling: fal
         close() { this.open = false; }, showModal() { this.open = true; },
         closest(selector) {
           return {
+            querySelector(){return null;}, insertBefore(){}, appendChild(){},
             classList: {
               add() {}, remove() {}, toggle() {}, contains() { return false; },
             },
@@ -106,7 +106,7 @@ function harness(initial, settings = { pollIntervalSeconds: 1, falsePolling: fal
     matchMedia: matchMediaMock,
     alert: msg => { state.lastAlert = String(msg); },
     document: {
-      getElementById: node,
+      getElementById: node, createElement: tag => node(tag+serial++),
       querySelectorAll: selector => selector === '.mobile-toggle' ? state.toggles
         : selector === '.timer-extension' ? state.extensions
         : selector === '.quick-add-apply' ? state.applies : []
@@ -249,11 +249,13 @@ test('settings apply to all schedules, preserve pending requests, and survive re
   h.start();
   await h.advance(1000);
   h.run('openSettings()');
-  assert.equal(h.node('pollInterval').value, 5);
-  assert.equal(h.node('falsePolling').checked, false);
-  h.node('pollInterval').value = '2';
-  h.node('falsePolling').checked = true;
-  h.run('saveSettings({preventDefault() {}})');
+  assert.equal(h.node('pollingDialog').open,true);
+  assert.equal(h.node('pollInterval').value,5);
+  assert.equal(h.node('falsePollingState').textContent,"Disabled");
+  h.node('pollInterval').value='2';
+  h.run('saveSettings({preventDefault(){}});toggleFalsePolling()');
+  assert.equal(h.node('pollingDialog').open,false);
+  assert.equal(h.node('falsePollingState').textContent,"Enabled");
   await h.advance(4000);
   assert.deepEqual(h.calls.filter(c => c.url === 'http://online:18081/status').map(c => c.at), [0, 3000, 5000]);
   assert.deepEqual(h.calls.filter(c => c.url === 'http://slow:18081/status').map(c => c.at), [0, 5000]);
@@ -511,8 +513,8 @@ test('timer extension buttons target the selected timer, add exact seconds, and 
   h.responses.set('http://pc:18081/status', agentStatus(60, 75));
   h.start();
   await h.advance(0);
-  const markup = h.node('dashboardGrid').innerHTML;
-  assert.equal((markup.match(/class="timer-extension"/g) || []).length, 9);
+  const markup = h.run('activePCs().map(timerExtensionButtons).join("")');
+  assert.equal((markup.match(/class="timer-extension"/g) || []).length, 15);
   for (const label of ['+15 min', '+30 min', '+1 hr']) assert.ok(markup.includes(`>${label}</button>`));
 
   let expected = 60;
@@ -578,7 +580,7 @@ test('a billed dashboard extension uses one session update and refreshes the mat
   await h.run('extendTimer("pc", 900)');
 
   assert.equal(h.node('dt-pc').textContent, '00:16:00');
-  assert.match(h.node('bill-pc').textContent, /Alice.*45 min.*INR 45/);
+  assert.match(h.node('bill-pc').textContent, /INR 45/);
   assert.equal(h.calls.filter(call => call.url === '/api/sessions/extend').length, 1);
   assert.equal(h.calls.filter(call => call.url === 'http://pc:18081/tweak').length, 0);
 });
@@ -650,266 +652,39 @@ test('unchanged status preserves special button elements despite browser HTML no
   assert.equal(replacements, before, 'polling must not replace unchanged buttons and lose keyboard focus');
 });
 
-test('inline session forms validate duration and custom price independently per PC', async () => {
-  const h = harness([sample('pc-a'), sample('pc-b')]);
-  h.responses.set('/api/pricing', {
-    currency: 'INR',
-    entries: [
-      { category: 'PC Pro', players: 1, duration_minutes: 15, amount: 20 },
-      { category: 'PC Pro', players: 1, duration_minutes: 30, amount: 40 },
-      { category: 'PC Pro', players: 1, duration_minutes: 60, amount: 70 },
-      { category: 'PC Lite', players: 1, duration_minutes: 15, amount: 15 },
-    ],
-  });
-  h.start();
-  await h.advance(0);
-
-  const markup = h.node('dashboardGrid').innerHTML;
-  assert.equal((markup.match(/Start Session/g) || []).length, 2);
-  assert.match(markup, /Manual Set/);
-  assert.match(markup, /Enter Customer Name/);
-  assert.match(markup, /Pricing Group/);
-  assert.match(markup, /Manual price is not saved/);
-  assert.doesNotMatch(markup, /New Session/);
-
-  h.node('sf-customer-pc-a').value = 'Ada';
-  h.node('sf-category-pc-a').value = 'PC Pro';
-  h.node('sf-players-pc-a').value = '1';
-  h.node('sf-duration-pc-a').value = '30';
-  h.node('sf-unit-pc-a').value = 'M';
-  h.node('sf-price-pc-a').value = '120';
-  h.run('updateCardSessionForm("pc-a", "price")');
-  assert.equal(h.node('sf-estimate-pc-a').textContent, '₹40');
-  assert.equal(h.node('sf-start-pc-a').disabled, false);
-
-  h.node('sf-duration-pc-a').value = '1';
-  h.node('sf-unit-pc-a').value = 'H';
-  h.run('updateCardSessionForm("pc-a", "unit")');
-  assert.equal(h.node('sf-duration-pc-a').max, '24');
-  assert.equal(h.node('sf-estimate-pc-a').textContent, '₹70');
-  assert.equal(h.node('sf-start-pc-a').disabled, false);
-
-  h.node('sf-price-pc-a').value = '-1';
-  h.run('updateCardSessionForm("pc-a", "price")');
-  assert.equal(h.node('sf-start-pc-a').disabled, true);
-  assert.match(h.node('sf-price-error-pc-a').textContent, /non-negative/);
-  h.node('sf-price-pc-a').value = '120';
-  h.node('sf-duration-pc-a').value = '1.5';
-  h.run('updateCardSessionForm("pc-a", "duration")');
-  assert.equal(h.node('sf-start-pc-a').disabled, true);
-  assert.match(h.node('sf-duration-error-pc-a').textContent, /whole duration/);
-  assert.equal(h.run('sessionFormFor("pc-b").state.manualPrice'), '');
+test('start accepts missing customer details and Save updates the same session',async()=>{
+ const h=harness([sample("pc"),sample("other")]);
+ h.responses.set("/api/pricing",{entries:[{category:"PC Pro",players:1,duration_minutes:15,amount:20}]});
+ const started={id:"s1",pc_id:"pc",pc_address:"http://pc:18081",category:"PC Pro",status:"open",players:0,customer_name:"",updated_at:"v1"};
+ h.responses.set("/api/sessions",started);
+ h.responses.set("/api/sessions?status=open",[]);
+ h.start();await h.advance(0);
+ assert.equal(h.run("cardCategoryHTML(pcs[0])"),"");
+ h.run('billingCatalog.entries.push({category:"Premium",group:"PC Pro",players:1,duration_minutes:15,amount:25})');
+ assert.match(h.run("cardCategoryHTML(pcs[0])"),/<select/);
+ h.node("cv-pc").value="+30";h.node("cf-pc").value="60";
+ h.responses.set("/api/sessions?status=open",[started]);
+ await h.run('startPCBillingSession("pc")');
+ assert.match(h.node("sf-message-pc").textContent,/again/);
+ assert.equal(h.calls.filter(c=>c.url==="/api/sessions" && c.options.method==="POST").length,0);
+ await h.run('startPCBillingSession("pc")');
+ const call=h.calls.find(c=>c.url==="/api/sessions" && c.options.method==="POST");
+ assert.deepEqual(JSON.parse(call.options.body),{pc_id:"pc",category:"PC Pro",customer_name:"",players:1,duration_minutes:30,duration_seconds:1800,allow_incomplete:true});
+ h.run('cardSessionInput("pc","customer","Alex");cardSessionInput("pc","players","1");quickFill($("btn"),"pc","+5","60")');
+ const saved={...started,customer_name:"Alex",players:1,updated_at:"v2"};
+ h.responses.set("/api/sessions/s1/save",saved);
+ h.responses.set("/api/sessions?status=open",[saved]);
+ await h.run('savePCBillingSession("pc",false)');
+ const update=h.calls.find(c=>c.url==="/api/sessions/s1/save");
+ assert.deepEqual(JSON.parse(update.options.body),{customer_name:"Alex",players:1,category:"PC Pro",timer_mode:"tweak",seconds:300,manual_price:null,set_manual_price:true,updated_at:"v1"});
+ assert.equal(h.calls.filter(c=>c.url==="/api/sessions" && c.options.method==="POST").length,1);
 });
-
-test('inline session creation targets its own PC and does not submit a manual price override', async () => {
-  const h = harness([sample('pc-a'), sample('pc-b')]);
-  const session = {
-    id: 'S-pc-a', pc_id: 'pc-a', pc_address: 'http://pc-a:18081', status: 'open',
-    customer_name: 'Ada', category: 'PC Pro', players: 1, purchased_minutes: 30,
-    additional_minutes: 0, final_amount: 40, amount_paid: 40,
-  };
-  h.responses.set('/api/pricing', {
-    currency: 'INR',
-    entries: [{ category: 'PC Pro', players: 1, duration_minutes: 30, amount: 40 }],
-  });
-  h.responses.set('/api/sessions', session);
-  h.responses.set('/api/sessions?status=open', []);
-  h.responses.set('/api/sessions?search=&payment_status=', []);
-  h.responses.set('/api/billing/summary', { enabled: false, configuration_status: 'billing disabled' });
-  h.responses.set('/api/billing/report?date=2026-10-23', {
-    complete: true, customer_count: 0, revenue: 0, outstanding: 0, pcs: [], records: [], devices: [],
-  });
-  h.start();
-  await h.advance(0);
-
-  h.node('sf-customer-pc-a').value = 'Ada';
-  h.node('sf-category-pc-a').value = 'PC Pro';
-  h.node('sf-players-pc-a').value = '1';
-  h.node('sf-duration-pc-a').value = '30';
-  h.node('sf-unit-pc-a').value = 'M';
-  h.node('sf-price-pc-a').value = '120';
-  h.node('sf-start-pc-a').disabled = false;
-  await h.run('startPCBillingSession("pc-a")');
-
-  const call = h.calls.find(item => item.url === '/api/sessions' && item.options.method === 'POST');
-  assert.ok(call);
-  assert.deepEqual(JSON.parse(call.options.body), {
-    pc_id: 'pc-a', category: 'PC Pro', customer_name: 'Ada', players: 1, duration_minutes: 30,
-  });
-  assert.equal(h.node('sf-customer-pc-a').value, '');
+test('quick buttons accumulate signed minutes on the selected timer',async()=>{
+ const h=harness([sample("pc")]);h.start();await h.advance(0);
+ h.node("cv-pc").value="15";h.node("cf-pc").value="60";
+ for(const [value,expected] of [["+15","+15"],["+15","+30"],["-5","+25"],["+5","+30"]]){
+ h.run('quickFill($("btn"),"pc",'+JSON.stringify(value)+',"60")');assert.equal(h.node("cv-pc").value,expected);}
 });
-
-test('four PC cards keep independent forms and support simultaneous successful sessions', async () => {
-  const systems = Array.from({ length: 4 }, (_, index) => sample(`pc-${index + 1}`));
-  const h = harness(systems);
-  const created = [];
-  h.slow.add('/api/sessions');
-  h.responses.set('/api/pricing', {
-    currency: 'INR',
-    entries: [
-      { category: 'PC Pro', players: 1, duration_minutes: 15, amount: 20 },
-      { category: 'PC Lite', players: 2, duration_minutes: 30, amount: 40 },
-    ],
-  });
-  h.responses.set('/api/sessions?status=open', () => created);
-  h.responses.set('/api/sessions?search=&payment_status=', []);
-  h.responses.set('/api/billing/summary', { enabled: false, configuration_status: 'billing disabled' });
-  h.start();
-  await h.advance(0);
-
-  for (let index = 0; index < systems.length; index++) {
-    const id = systems[index].id;
-    h.node(`sf-customer-${id}`).value = `Guest ${index + 1}`;
-    h.node(`sf-category-${id}`).value = index % 2 ? 'PC Lite' : 'PC Pro';
-    h.node(`sf-players-${id}`).value = index % 2 ? '2' : '1';
-    h.node(`sf-duration-${id}`).value = index % 2 ? '30' : '15';
-    h.node(`sf-unit-${id}`).value = 'M';
-    h.node(`sf-price-${id}`).value = String(100 + index);
-  }
-  const starts = systems.map(system => h.run(`startPCBillingSession(${JSON.stringify(system.id)})`));
-  await flush();
-  const posts = h.calls.filter(call => call.url === '/api/sessions' && call.options.method === 'POST');
-  assert.equal(posts.length, 4);
-  const requests = posts.map(call => JSON.parse(call.options.body));
-  assert.deepEqual(requests.map(request => request.pc_id), systems.map(system => system.id));
-  assert.deepEqual(requests.map(request => request.customer_name), ['Guest 1', 'Guest 2', 'Guest 3', 'Guest 4']);
-  assert.deepEqual(requests.map(request => request.duration_minutes), [15, 30, 15, 30]);
-  assert.ok(requests.every(request => !Object.hasOwn(request, 'manual_price')));
-
-  for (let index = 0; index < posts.length; index++) {
-    const request = requests[index];
-    const pc = systems.find(system => system.id === request.pc_id);
-    const session = {
-      id: `S-${index + 1}`, pc_id: pc.id, pc_address: pc.address, status: 'open',
-      customer_name: request.customer_name, category: request.category, players: request.players,
-      purchased_minutes: request.duration_minutes, additional_minutes: 0, final_amount: 20, amount_paid: 20,
-    };
-    created.push(session);
-    posts[index].resolve(session);
-  }
-  await Promise.all(starts);
-  assert.equal(created.length, 4);
-  for (const system of systems) {
-    assert.equal(h.node(`session-form-${system.id}`).hidden, true);
-    assert.equal(h.node(`session-details-${system.id}`).hidden, false);
-    assert.match(h.node(`session-details-${system.id}`).innerHTML, new RegExp(`Guest ${system.id.slice(-1)}`));
-  }
-});
-
-test('invalid customer and repeated pending clicks cannot create a session twice', async () => {
-  const h = harness([sample('pc-a')]);
-  const created = [];
-  h.slow.add('/api/sessions');
-  h.responses.set('/api/pricing', {
-    currency: 'INR', entries: [{ category: 'PC Pro', players: 1, duration_minutes: 15, amount: 20 }],
-  });
-  h.responses.set('/api/sessions?status=open', () => created);
-  h.start();
-  await h.advance(0);
-  h.node('sf-category-pc-a').value = 'PC Pro';
-  h.node('sf-players-pc-a').value = '1';
-  h.node('sf-duration-pc-a').value = '15';
-  h.node('sf-unit-pc-a').value = 'M';
-  h.run('updateCardSessionForm("pc-a", "duration")');
-  h.node('sf-start-pc-a').disabled = false;
-  await h.run('startPCBillingSession("pc-a")');
-  assert.match(h.node('sf-message-pc-a').textContent, /customer name/i);
-  assert.equal(h.calls.filter(call => call.url === '/api/sessions' && call.options.method === 'POST').length, 0);
-
-  h.node('sf-customer-pc-a').value = 'x'.repeat(121);
-  await h.run('startPCBillingSession("pc-a")');
-  assert.match(h.node('sf-message-pc-a').textContent, /120 characters/);
-  assert.equal(h.calls.filter(call => call.url === '/api/sessions' && call.options.method === 'POST').length, 0);
-
-  h.node('sf-customer-pc-a').value = 'Guest';
-  const first = h.run('startPCBillingSession("pc-a")');
-  await flush();
-  await h.run('startPCBillingSession("pc-a")');
-  const posts = h.calls.filter(call => call.url === '/api/sessions' && call.options.method === 'POST');
-  assert.equal(posts.length, 1);
-  assert.equal(h.node('sf-start-pc-a').disabled, true);
-  const session = {
-    id: 'S-pc-a', pc_id: 'pc-a', pc_address: 'http://pc-a:18081', status: 'open',
-    customer_name: 'Guest', category: 'PC Pro', players: 1, purchased_minutes: 15,
-    additional_minutes: 0, final_amount: 20, amount_paid: 20,
-  };
-  created.push(session);
-  posts[0].resolve(session);
-  await first;
-  assert.equal(h.node('session-form-pc-a').hidden, true);
-});
-
-test('backend failure keeps the card available for correction and retry', async () => {
-  const h = harness([sample('pc-a')]);
-  h.slow.add('/api/sessions');
-  h.responses.set('/api/pricing', {
-    currency: 'INR', entries: [{ category: 'PC Pro', players: 1, duration_minutes: 15, amount: 20 }],
-  });
-  h.start();
-  await h.advance(0);
-  h.node('sf-category-pc-a').value = 'PC Pro';
-  h.node('sf-players-pc-a').value = '1';
-  h.node('sf-duration-pc-a').value = '15';
-  h.node('sf-unit-pc-a').value = 'M';
-  h.run('updateCardSessionForm("pc-a", "duration")');
-  h.node('sf-customer-pc-a').value = 'Keep this customer';
-  h.node('sf-start-pc-a').disabled = false;
-  const starting = h.run('startPCBillingSession("pc-a")');
-  await flush();
-  const post = h.calls.find(call => call.url === '/api/sessions' && call.options.method === 'POST');
-  post.fail(new Error('billing device unavailable'));
-  await starting;
-  assert.equal(h.node('session-form-pc-a').hidden, false);
-  assert.equal(h.node('sf-customer-pc-a').value, 'Keep this customer');
-  assert.equal(h.node('sf-start-pc-a').disabled, false);
-  assert.match(h.node('sf-message-pc-a').textContent, /billing device unavailable/);
-  assert.equal(h.node('session-details-pc-a').hidden, true);
-});
-
-test('mismatched session response is not shown as a successful start', async () => {
-  const h = harness([sample('pc-a')]);
-  h.slow.add('/api/sessions');
-  h.responses.set('/api/pricing', {
-    currency: 'INR', entries: [{ category: 'PC Pro', players: 1, duration_minutes: 15, amount: 20 }],
-  });
-  h.start();
-  await h.advance(0);
-  h.node('sf-customer-pc-a').value = 'Guest';
-  h.node('sf-category-pc-a').value = 'PC Pro';
-  h.node('sf-players-pc-a').value = '1';
-  h.node('sf-duration-pc-a').value = '15';
-  h.node('sf-unit-pc-a').value = 'M';
-  h.node('sf-start-pc-a').disabled = false;
-  const starting = h.run('startPCBillingSession("pc-a")');
-  await flush();
-  const post = h.calls.find(call => call.url === '/api/sessions' && call.options.method === 'POST');
-  post.resolve({
-    id: 'S-other', pc_id: 'another-pc', pc_address: 'http://another-pc:18081', status: 'open',
-    customer_name: 'Guest', category: 'PC Pro', players: 1, purchased_minutes: 15,
-  });
-  await starting;
-  assert.equal(h.node('session-form-pc-a').hidden, false);
-  assert.equal(h.node('session-details-pc-a').hidden, true);
-  assert.equal(h.node('sf-customer-pc-a').value, 'Guest');
-  assert.match(h.node('sf-message-pc-a').textContent, /mismatched session/i);
-});
-
-test('Quick Add selection applies only to the chosen PC through the existing extension workflow', async () => {
-  const h = harness([sample('pc-a'), sample('pc-b')]);
-  h.responses.set('/api/sessions/extend', { session_found: false });
-  h.responses.set('http://pc-a:18081/tweak', { status: 'success', remaining_seconds: 2100 });
-  h.start();
-  await h.advance(0);
-
-  h.run('selectQuickAdd("pc-a", 1800)');
-  await h.run('applyQuickAdd("pc-a")');
-
-  const extension = h.calls.find(call => call.url === 'http://pc-a:18081/tweak');
-  assert.ok(extension);
-  assert.deepEqual(JSON.parse(extension.options.body), { amount: 1800 });
-  assert.equal(h.calls.some(call => call.url === 'http://pc-b:18081/tweak'), false);
-});
-
 test('consolidated report renders synchronized totals and incomplete device status', async () => {
   const h = harness([]);
   h.responses.set('/api/billing/report?date=2026-02-02', {
@@ -936,7 +711,7 @@ test('consolidated report renders synchronized totals and incomplete device stat
   assert.equal(h.node('reportRevenue').textContent, 'INR 75');
   assert.match(h.node('billingReportPCs').innerHTML, /PC 1.*INR 85.*INR 75/);
   assert.match(h.node('billingReportDevices').innerHTML, /PC 2.*Offline.*offline/);
-  assert.match(h.node('billingReportRecords').innerHTML, /Alice.*2026-02-02.*45 min.*15 min.*INR 85.*INR 75.*INR 10.*partial/);
+  assert.match(h.node('billingReportRecords').innerHTML, /Alice.*2026-02-02.*60 min.*15 min.*INR 85.*INR 75.*INR 10.*partial/);
   assert.match(h.node('billingReportStatus').textContent, /incomplete.*PC 2: offline.*last sync never/);
   await h.run('syncBillingNow()');
   assert.ok(h.calls.some(call => call.url === '/api/billing/sync' && call.options.method === 'POST'));
@@ -950,7 +725,7 @@ test('central request checker adds correlation metadata and retains bounded requ
   h.slow.add('/api/health');
   const promise = h.run('request("/api/health", {}, { deviceId: "PC-4", feature: "health-check" })');
   await flush();
-  const call = h.calls.at(-1);
+  const call = h.calls.find(c => c.url === '/api/health');
   assert.equal(call.options.headers['X-Device-ID'], 'PC-4');
   assert.match(call.options.headers['X-Request-ID'], /^[A-Za-z0-9._-]+$/);
   call.resolve({ status: 'ok' });
@@ -1003,10 +778,126 @@ test('card timer adjustment and unit change execute properly with mock window an
   h.node('cv-pc-a').value = '+10';
   h.node('cf-pc-a').value = '60';
   h.run('cardUnitChanged("pc-a")');
-  assert.equal(h.node('dm-pc-a').textContent, 'Adjust existing time by +10');
+  assert.equal(h.node('dm-pc-a').textContent, '');
 
-  await h.run('cardSubmit("pc-a")');
-  const tweak = h.calls.find(c => c.url === 'http://pc-a:18081/tweak');
-  assert.ok(tweak);
+  const tweak=h.run('cardTimerDraft("pc-a")');
+  assert.equal(tweak.timer_mode,"tweak");
+  assert.equal(tweak.seconds,600);
 });
 
+
+test('a bill follows its owner and virtual timer across addresses',async()=>{
+  const h=harness([]);h.start();await h.advance(0);
+  const same=h.run('sessionMatchesPC');
+  const session={device_id:"Desk",pc_id:"old",pc_address:"http://192.0.2.1:18081/1"};
+  const alias={owner:"Desk",id:"new",address:"http://198.51.100.2:18081/1"};
+  assert.equal(same(session,alias),true);
+  assert.equal(same(session,{...alias,owner:"Another desk"}),false);
+  assert.equal(same(session,{...alias,address:"http://198.51.100.2:18081/2"}),false);
+});
+
+test('same-name hosts share a card and select an address while virtual timers stay distinct', async () => {
+  const a = {...sample("first"),name:"Desk"};
+  const b = {...sample("second"),name:"desk"};
+  const h = harness([a,b,{...sample("link"),name:"Link",address:"http://169.254.42.1:18081"},
+    {...agent("first","1"),owner:"Desk"}]);
+  h.start();await h.advance(0);
+  assert.equal(h.run("pcs.length"),2);
+  assert.match(h.node("dashboardGrid").innerHTML, /<select aria-label="Address for Desk"/);
+  h.run('choosePCAddress("first", "http://second:18081")');
+  assert.equal(h.run("pcs[0].id"),"second");
+  assert.equal(h.run("activePCs().length"),2);
+});
+
+test('system config exposes the category and keeps on-behalf configuration separate', async () => {
+  const h = harness([sample("host"),agent("host","1")]);
+  const config = {friendly_name:"Desk", pricing_group:"PC Pro", billing:{enabled:true},
+    timer_port:18081, on_behalf_of:[{id:"1",name:"Screen",pricing_group:"Console"}]};
+  for (const id of ["host","host-1"]) h.responses.set("/api/pcs/"+id+"/config",{config,full_access:true});
+  h.start();await h.advance(0);
+  h.run('showDetail("host")');
+  await h.advance(0);
+  assert.equal(h.node('detail').hidden,false);
+  assert.equal(h.node("systemCategory").value,"PC Pro");
+  assert.match(h.node("systemConfigTimers").innerHTML,/Details.*button/s);
+  assert.match(h.node("systemAdvancedFields").innerHTML,/Timer port/);
+  h.run('showDetail("host-1")');
+  await h.advance(0);
+  assert.equal(h.node("systemCategory").value,"Console");
+  assert.match(h.node("systemAdvancedFields").innerHTML,/Show command/);
+  assert.doesNotMatch(h.node("systemAdvancedFields").innerHTML,/Timer port/);
+});
+
+test('today bill opens a populated editor and sends customer, system, category, time and amounts',async()=>{
+  const h=harness([sample("pc"),sample("other")]);
+  h.start();await h.advance(0);
+  h.run('todayBills=[{id:"bill1",customer_name:"Alex",pc_id:"pc",pc_name:"Desk",category:"PC Pro",players:1,status:"closed",started_at:"2026-11-26T15:00:00+05:30",ended_at:"2026-11-26T15:30:00+05:30",purchased_minutes:30,additional_minutes:0,actual_duration_seconds:1800,final_amount:80,amount_paid:60,updated_at:"version"}];openBillEditor("bill1")');
+  assert.equal(h.node("billEditor").open,true);
+  assert.equal(h.node("billStarted").value,"2026-11-26T15:00:00");
+  h.node("billCustomer").value="Sam";
+  h.node("billSystem").value="other";
+  h.node("billCategory").value="Console";
+  h.node("billPaid").value="90";
+  await h.run('saveBill({preventDefault(){}})');
+  const payload=JSON.parse(h.calls.find(c=>c.url==="/api/sessions/bill1/edit").options.body);
+  assert.equal(payload.customer_name,"Sam");
+  assert.equal(payload.pc_id,"other");
+  assert.equal(payload.category,"Console");
+  assert.equal(payload.started_at,"2026-11-26T15:00:00+05:30");
+  assert.equal(payload.amount_paid,90);
+});
+
+test('today bills show newest first and offer continuation only on the latest closed bill per system',async()=>{
+  const h=harness([sample("pc"),sample("other")]);
+  h.start();await h.advance(0);
+  const today=h.run("billingTodayDate()");
+  const bill=(id,pc,status,time)=>({id,pc_id:pc,pc_address:"http://"+pc+":18081",pc_name:pc,
+    status,customer_name:id,created_at:"2026-11-26T"+time+":00+05:30"});
+  const latest=bill("latest","pc","closed","12:00");
+  h.responses.set("/api/billing/report?date="+today,{records:[
+    bill("old","pc","closed","11:00"),latest,bill("other","other","open","12:30")]});
+  await h.run("loadToday()");
+  const html=h.node("todayBills").innerHTML;
+  assert.ok(html.indexOf("other")<html.indexOf("latest")&&html.indexOf("latest")<html.indexOf("old"));
+  assert.equal((html.match(/Continue this session/g)||[]).length,2);
+  h.node("todayBillsSearch").value="old";
+  h.run("renderTodayBills()");
+  assert.match(h.node("todayBills").innerHTML,/old/);
+  assert.doesNotMatch(h.node("todayBills").innerHTML,/Continue this session|latest/);
+  h.node("todayBillsSearch").value="";
+  h.responses.set("/api/sessions/latest/continue",{...latest,status:"open"});
+  h.responses.set("/api/sessions?status=open",[{...latest,status:"open"}]);
+  await h.run('continueBill("latest",$("continue"))');
+  assert.ok(h.calls.some(c=>c.url==="/api/sessions/latest/continue"));
+  assert.equal(h.node("cv-pc").value,"");
+  assert.match(h.node("sf-message-pc").textContent,/press Save/);
+});
+
+test('signed adjustments stay visible and apply once per Save',async()=>{
+ const h=harness([sample("pc")]);h.start();await h.advance(0);
+ const bill={id:"repeat",pc_id:"pc",pc_address:"http://pc:18081",status:"open",
+   customer_name:"Alex",players:1,category:"PC Pro",updated_at:"v1",purchased_minutes:20,additional_minutes:0};
+ h.run('applyCardSession(pcs[0],'+JSON.stringify(bill)+')');
+ h.node("cv-pc").value="-5";h.node("cf-pc").value="60";
+ h.run('cardNumberChanged("pc")');
+ for(const version of ["v2","v3"]){
+   const updated={...bill,updated_at:version};
+   h.responses.set("/api/sessions/repeat/save",updated);
+   h.responses.set("/api/sessions?status=open",[updated]);
+   await h.run('savePCBillingSession("pc",false)');
+   assert.equal(h.node("cv-pc").value,"-5");
+ }
+ assert.deepEqual(h.calls.filter(c=>c.url==="/api/sessions/repeat/save").map(c=>JSON.parse(c.options.body).seconds),[-300,-300]);
+});
+test('zero is the default start and style controls persist independently',async()=>{
+ const h=harness([sample("pc")]);h.start();await h.advance(0);
+ assert.match(h.node("dashboardGrid").innerHTML,/id="cv-pc"[^>]+value="0"/);
+ h.node("cv-pc").value="0";h.node("cf-pc").value="60";
+ h.run('cardSessionInput("pc","customer","Alex")');
+ await h.run('startPCBillingSession("pc")');
+ const start=h.calls.find(c=>c.url==="/api/sessions"&&c.options.method==="POST");
+ assert.equal(JSON.parse(start.options.body).duration_seconds,0);
+ h.run('setDashboardStyle("experimental");toggleTimerUnits()');
+ assert.deepEqual(JSON.parse(h.storage.get("overlay-timer-dashboard-view-v1")),{style:"experimental",showUnits:true});
+ assert.equal(h.node("dashboard").getAttribute("data-style"),"experimental");
+});

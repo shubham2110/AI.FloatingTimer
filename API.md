@@ -574,30 +574,19 @@ duration, and starts that timer before persisting the session. Numeric path suff
 such as `/1` are preserved, so a virtual timer is not confused with its host.
 
 The server rejects duplicate open sessions and reports timer errors instead of
-recording a failed start as successful. If the timer command or workbook write fails
+recording a failed start as successful. If the timer command or daily CSV write fails
 after the timer has been changed, the server attempts to restore the timer's prior
 remaining time, running state, and overlay visibility; a failed restoration is
 reported explicitly.
 
-Each device's `billing.xlsx` workbook has a `Sessions` worksheet with the visible
-columns `Date`, `Time`, `Customer`, `System`, `Players`, `Start Time`,
-`Purchased Minutes`, and `Amount Paid`. Date/time cells use Excel date/time values
-with `DD-MM-YYYY` and `HH:MM:SS` display formats. New sessions record the rate-card
-price as `Amount Paid` at start, per the operator's configured billing workflow.
-Session identifiers and fields needed by the API are stored in row comments rather
-than extra worksheet columns. The reporting hub stores idempotent copies imported
-from registered PCs. Existing session and payment data is migrated after a workbook
-backup; payment history is retained in the associated session metadata.
+Each owner writes one daily CSV under `billing/`. The session start date determines the file. The billing owner uses the configured friendly name or the host name. Discovery records the host's configured name (or Windows computer name) as `owner` on every timer. Billing identifies a timer by that owner and its path (empty for the host, e.g. `/1` for a virtual timer). The dashboard uses the registered address to reach the peer. An updated peer resolves the owner/path against its own timer manifest and applies local commands via loopback. Use distinct configured names on different hosts. After upgrading peers, run Discover to refresh legacy registry entries.
 
-### Local PC ownership and synchronization
-
-Each gaming PC stores the authoritative session in its own `billing.xlsx`. New
-installations enable billing by default; existing configurations with
-`billing.enabled: false` must be changed to `true` on each PC and restarted.
-Every installation persists a stable ID in `billing_device_id.txt`; an optional
-`billing.device_id` override must be unique per physical PC and remain unchanged.
-The dashboard host is the reporting hub and must have the PCs registered with
-their management/UI ports (normally `18082`) reachable.
+| Method and path | Description |
+| --- | --- |
+| `GET /api/billing/download?date=YYYY-MM-DD` | Download one daily CSV. The default is today in Asia/Kolkata. |
+| `PUT /api/pricing` | Save the catalog returned by GET. Rules have group, category, players, duration_minutes and amount. |
+| `POST /api/pricing/distribute` | Send saved rules to known available peer managers and return per-peer results. |
+| `POST /api/sessions/{id}/correct` | Set amount paid and time spent using integer amount and minutes. |
 
 The dashboard routes remote session starts and changes to the exact owning PC
 endpoint. A background pull runs every 30 seconds; the dashboard's **Sync PCs**
@@ -610,7 +599,7 @@ upserts snapshots by `(device_id, session_id)` and acknowledges only the matchin
 | `POST /api/billing/sync` | Pull pending records from the hub's registered PCs. Returns per-device online, pending, error, and last-successful-sync state plus an overall `complete` flag. |
 | `GET /api/billing/report?date=YYYY-MM-DD` | Return synchronized session records, registered system count, session count, distinct named customer count, billed/collected/outstanding amounts, PC-wise totals, and device sync state for the requested date. |
 | `GET /internal/api/billing/sync/pending` | Peer API used by the hub to read a device's not-yet-acknowledged session snapshots. |
-| `POST /internal/api/billing/sync/ack` | Peer API used by the hub to acknowledge exact session IDs and update timestamps after its workbook write succeeds. |
+| `POST /internal/api/billing/sync/ack` | Peer API used by the hub to acknowledge exact session IDs and update timestamps after its daily CSV write succeeds. |
 
 The report groups each session by its start date in `Asia/Kolkata`, including
 sessions that continue past midnight; a session is reported on its start date
@@ -626,7 +615,7 @@ same `(device_id, session_id)` and does not add another session to totals.
 The report is incomplete if any currently registered PC is offline, reports an
 error, or has pending records. The device table reports its last successful
 synchronization timestamp; previously synchronized history remains visible while
-a report is incomplete. Historical records remain in the hub workbook after a
+a report is incomplete. Historical records remain in the hub CSV files after a
 PC is removed from the current registry.
 
 The peer APIs are unauthenticated and unencrypted. Use only on a trusted private

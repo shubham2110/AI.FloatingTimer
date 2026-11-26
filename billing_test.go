@@ -5,25 +5,24 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"golang.org/x/sys/windows"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
-	"strconv"
+
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/xuri/excelize/v2"
 )
 
 func configureBillingTest(t *testing.T) string {
 	t.Helper()
 	directory := t.TempDir()
-	oldEnabled, oldPath, oldBackup := billingStore.enabled, billingStore.path, billingStore.backupDir
-	oldDeviceID, oldConfiguredID := billingStore.deviceID, billingStore.configuredID
+	oldEnabled, oldPath := billingStore.enabled, billingStore.path
+	oldDeviceID := billingStore.deviceID
 	oldSyncStatuses := billingStore.syncStatuses
 	oldClient := timerHTTP
 	billingSessionLinks.Lock()
@@ -35,15 +34,15 @@ func configureBillingTest(t *testing.T) string {
 	store.PCs = nil
 	store.Unlock()
 	billingStore.enabled = true
-	billingStore.path = filepath.Join(directory, "billing.xlsx")
-	billingStore.backupDir = filepath.Join(directory, "backups")
+	billingStore.path = directory
+
 	billingStore.deviceID = ""
-	billingStore.configuredID = ""
+
 	billingStore.syncStatuses = nil
 	timerHTTP = &http.Client{Timeout: 2 * time.Second}
 	t.Cleanup(func() {
-		billingStore.enabled, billingStore.path, billingStore.backupDir = oldEnabled, oldPath, oldBackup
-		billingStore.deviceID, billingStore.configuredID = oldDeviceID, oldConfiguredID
+		billingStore.enabled, billingStore.path = oldEnabled, oldPath
+		billingStore.deviceID = oldDeviceID
 		billingStore.syncStatuses = oldSyncStatuses
 		timerHTTP = oldClient
 		billingSessionLinks.Lock()
@@ -154,138 +153,6 @@ func TestOverlayExtensionUsesItsRegisteredBillingSession(t *testing.T) {
 	}
 	if got.SessionID != "S-overlay" || got.PCAddress != localPC.Address || got.PCID != localPC.ID || got.Seconds != 15*60 || got.RequestID == "" {
 		t.Fatalf("overlay sent an incorrect session extension: %+v", got)
-	}
-}
-
-func createLegacyBillingWorkbook(t *testing.T, path string, session Session) {
-	t.Helper()
-	f := excelize.NewFile()
-	if err := f.SetSheetName("Sheet1", "Sessions"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.NewSheet("Payments"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.NewSheet("Daily Summary"); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeRow(f, "Sessions", 1, legacySessionHeaders); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeRow(f, "Sessions", 2, rowFor(session)); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeRow(f, "Payments", 1, paymentHeaders); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeRow(f, "Payments", 2, []string{"P-legacy", session.ID, session.PaymentAt, "10", "partial"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeRow(f, "Daily Summary", 1, []string{"Date", "Collected Amount", "Payment Count"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.SaveAs(path); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestLegacyBillingWorkbookMigratesAndPreservesPaymentData(t *testing.T) {
-	directory := configureBillingTest(t)
-	sessionStart := time.Date(2026, time.January, 2, 16, 0, 0, 0, time.Local)
-	sessionCreated := time.Date(2026, time.January, 2, 15, 4, 5, 0, time.Local)
-	legacy := Session{
-		ID: "S-legacy", PCID: "pc-1", PCName: "Console 1", PCAddress: "http://127.0.0.1:18081/1",
-		Category: "PC Pro", CustomerName: "Legacy Customer", Players: 2, Status: "open",
-		StartedAt: sessionStart.Format(time.RFC3339Nano), ExpectedEndAt: sessionStart.Add(45 * time.Minute).Format(time.RFC3339Nano),
-		PurchasedMinutes: 30, AdditionalMinutes: 15, PricingSnapshot: "legacy price", EstimatedAmount: 20,
-		FinalAmount: 30, AmountPaid: 10, PaymentStatus: "partial", PaymentAt: sessionCreated.Format(time.RFC3339Nano),
-		CreatedAt: sessionCreated.Format(time.RFC3339Nano), UpdatedAt: sessionCreated.Format(time.RFC3339Nano),
-	}
-	billingStore.path = filepath.Join(directory, "billing.xlsx")
-	createLegacyBillingWorkbook(t, billingStore.path, legacy)
-
-	f, err := billingStore.openLocked()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	rows, err := sessionRows(f)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) != 2 || !reflect.DeepEqual(rows[0], sessionHeaders) {
-		t.Fatalf("unexpected migrated sheet rows: %#v", rows)
-	}
-	if got := f.GetSheetList(); !reflect.DeepEqual(got, []string{"Sessions"}) {
-		t.Fatalf("expected only Sessions worksheet after migration, got %v", got)
-	}
-	for cell, want := range map[string]string{
-		"A2": sessionStart.In(billingTimezone).Format("02-01-2006"),
-		"B2": sessionStart.In(billingTimezone).Format("15:04:05"),
-		"C2": legacy.CustomerName,
-		"D2": legacy.PCName,
-		"E2": "2",
-		"F2": sessionStart.In(billingTimezone).Format("15:04:05"),
-		"G2": "45",
-		"H2": "₹10",
-	} {
-		got, err := f.GetCellValue("Sessions", cell)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got != want {
-			t.Errorf("%s = %q, want %q", cell, got, want)
-		}
-	}
-	for cell, minValue := range map[string]float64{"A2": 40000, "B2": 0, "F2": 0, "H2": 0} {
-		raw, err := f.GetCellValue("Sessions", cell, excelize.Options{RawCellValue: true})
-		if err != nil {
-			t.Fatal(err)
-		}
-		value, err := strconv.ParseFloat(raw, 64)
-		if err != nil || value < minValue || ((cell == "B2" || cell == "F2") && value >= 1) {
-			t.Errorf("%s is not a correctly stored Excel number: %q (%v)", cell, raw, err)
-		}
-	}
-	migrated, err := sessionsFromWorkbook(f)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(migrated) != 1 || migrated[0].ID != legacy.ID || migrated[0].PaymentStatus != "partial" ||
-		migrated[0].AmountPaid != 10 || len(migrated[0].payments) != 1 || migrated[0].payments[0].ID != "P-legacy" {
-		t.Fatalf("legacy session or payment history was not preserved: %+v", migrated)
-	}
-	style, err := f.GetCellStyle("Sessions", "A1")
-	if err != nil || style == 0 {
-		t.Fatalf("expected formatted header, style=%d err=%v", style, err)
-	}
-	backups, err := filepath.Glob(filepath.Join(billingStore.backupDir, "*.xlsx"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(backups) != 1 {
-		t.Fatalf("expected one pre-migration backup, found %d", len(backups))
-	}
-
-	if _, err := billingStore.update(legacy.ID, "pay", 0, 0); err != nil {
-		t.Fatal(err)
-	}
-	afterUpdate, err := billingStore.sessions("", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(afterUpdate) != 1 || afterUpdate[0].AmountPaid != legacy.FinalAmount || len(afterUpdate[0].payments) != 2 {
-		t.Fatalf("session update duplicated/lost workbook state: %+v", afterUpdate)
-	}
-	if _, err := billingStore.update(legacy.ID, "pay", 0, 0); err == nil {
-		t.Fatal("duplicate full payment unexpectedly succeeded")
-	}
-	afterDuplicate, err := billingStore.sessions("", "")
-	if err != nil || len(afterDuplicate) != 1 || len(afterDuplicate[0].payments) != 2 {
-		t.Fatalf("duplicate full payment added another transaction: %+v, %v", afterDuplicate, err)
 	}
 }
 
@@ -463,7 +330,7 @@ func TestCloseWorkbookFailureRestoresTimerAndKeepsSessionOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	originalPath := billingStore.path
-	billingStore.path = filepath.Dir(originalPath) // Existing directory cannot be opened as an XLSX workbook.
+	billingStore.path = filepath.Join(originalPath, "missing") // Existing directory cannot be opened as an XLSX workbook.
 	_, err = closeOwnedSession(started.ID, started, PC{ID: "host", Name: "Host", Address: server.URL + "/1"})
 	if err == nil {
 		t.Fatal("close unexpectedly succeeded with an invalid workbook path")
@@ -519,44 +386,10 @@ func TestSessionStartAPIStartsOnlySelectedSharedHostTimer(t *testing.T) {
 	if remaining != entry.DurationMinutes*60 || !running {
 		t.Fatalf("selected timer did not start at purchased duration: remaining=%d running=%v", remaining, running)
 	}
-	f, err := excelize.OpenFile(billingStore.path)
-	if err != nil {
-		t.Fatal(err)
+	rows, err := billingStore.sessions("", "")
+	if err != nil || len(rows) != 1 || rows[0].CustomerName != started.CustomerName || rows[0].AmountPaid != entry.Amount {
+		t.Fatalf("incorrect daily CSV record: %v %v", rows, err)
 	}
-	rows, err := sessionRows(f)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) != 2 || !reflect.DeepEqual(rows[0], sessionHeaders) {
-		t.Fatalf("unexpected billing workbook content: %#v", rows)
-	}
-	wantCells := map[string]string{
-		"A2": started.CreatedAt,
-		"C2": started.CustomerName,
-		"D2": started.PCName,
-		"E2": strconv.Itoa(started.Players),
-		"G2": strconv.Itoa(entry.DurationMinutes),
-		"H2": "₹" + strconv.Itoa(entry.Amount),
-	}
-	createdAt, err := sessionTimestamp(started.CreatedAt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	startedAt, err := sessionTimestamp(started.StartedAt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantCells["A2"] = createdAt.Format("02-01-2006")
-	wantCells["B2"] = createdAt.Format("15:04:05")
-	wantCells["F2"] = startedAt.Format("15:04:05")
-	for cell, want := range wantCells {
-		got, err := f.GetCellValue("Sessions", cell)
-		if err != nil || got != want {
-			t.Errorf("workbook %s = %q, err=%v; want %q", cell, got, err, want)
-		}
-	}
-	_ = f.Close()
-
 	request = httptest.NewRequest(http.MethodPost, "/api/sessions", strings.NewReader(body))
 	response = httptest.NewRecorder()
 	mux.ServeHTTP(response, request)
@@ -602,17 +435,7 @@ func TestSessionStartTimerFailureRestoresTimerAndDoesNotWriteSession(t *testing.
 
 func TestSessionStartWorkbookFailureRestoresSelectedTimer(t *testing.T) {
 	configureBillingTest(t)
-	f, err := billingStore.openLocked()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.RemoveAll(billingStore.backupDir); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(billingStore.backupDir, []byte("not a directory"), 0600); err != nil {
+	if err := os.Mkdir(filepath.Join(billingStore.path, time.Now().In(billingTimezone).Format(time.DateOnly)+".csv"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	server, mu, requests, state := newBillingTimerServer(t, false)
@@ -641,43 +464,6 @@ func TestSessionStartWorkbookFailureRestoresSelectedTimer(t *testing.T) {
 		"POST /1/set", "POST /1/pause", "POST /1/hide",
 	}) {
 		t.Fatalf("unexpected timer rollback sequence: %v", *requests)
-	}
-}
-
-func TestUnsupportedLegacyPaymentDataDoesNotReplaceWorkbook(t *testing.T) {
-	directory := configureBillingTest(t)
-	path := filepath.Join(directory, "billing.xlsx")
-	sessionStart := time.Now().Format(time.RFC3339Nano)
-	legacy := Session{ID: "S-orphan", StartedAt: sessionStart, CreatedAt: sessionStart}
-	createLegacyBillingWorkbook(t, path, legacy)
-	f, err := excelize.OpenFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := writeRow(f, "Payments", 2, []string{"P-orphan", "missing-session", sessionStart, "5", "paid"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Save(); err != nil {
-		t.Fatal(err)
-	}
-	_ = f.Close()
-	before, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f, err = billingStore.openLocked()
-	if err == nil {
-		_ = f.Close()
-	}
-	if err == nil || !strings.Contains(err.Error(), "no matching session") {
-		t.Fatalf("expected explicit orphan-payment migration error, got %v", err)
-	}
-	after, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(before, after) {
-		t.Fatal("failed migration modified the source workbook")
 	}
 }
 
@@ -879,7 +665,7 @@ func TestConcurrentSessionsAndExtensionsStayIsolatedByEndpoint(t *testing.T) {
 		t.Fatalf("expected two workbook sessions without duplicate rows; got %d, err=%v", len(sessions), err)
 	}
 	for _, session := range sessions {
-		if session.PCID == "pc-b" && (session.PurchasedMinutes != 75 || session.AmountPaid != 115) {
+		if session.PCID == "pc-b" && (session.PurchasedMinutes != 75 || session.AmountPaid != 113) {
 			t.Fatalf("PC B session has an unexpected independent extension: %+v", session)
 		}
 	}
@@ -895,15 +681,17 @@ func TestSessionExtensionWorkbookFailureRollsBackTimer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(filepath.Dir(billingStore.backupDir), "not-a-directory"), []byte("x"), 0600); err != nil {
+	day, _ := billingDay(session)
+	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(filepath.Join(billingStore.path, day+".csv")), windows.GENERIC_READ, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, 0, 0)
+	if err != nil {
 		t.Fatal(err)
 	}
-	billingStore.backupDir = filepath.Join(filepath.Dir(billingStore.backupDir), "not-a-directory")
+	defer windows.CloseHandle(handle)
 	_, err = extendSessionForSystem(ExtendSessionRequest{
 		SessionID: session.ID, PCID: session.PCID, PCAddress: session.PCAddress,
 		Minutes: 15, RequestID: "workbook-failure",
 	}, true)
-	if err == nil || !strings.Contains(err.Error(), "could not update Excel billing record") {
+	if err == nil || !strings.Contains(err.Error(), "could not update CSV billing record") {
 		t.Fatalf("expected explicit Excel write failure, got %v", err)
 	}
 	mu.Lock()

@@ -12,7 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
+
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -179,7 +179,7 @@ func TestBillingSyncRetriesAreIdempotentAcrossFourDevices(t *testing.T) {
 	if len(report.Records) != 4 || report.Revenue != 90 {
 		t.Fatalf("offline status changed already synchronized historical totals: %+v", report)
 	}
-	if filepath.Dir(billingStore.path) != directory {
+	if billingStore.path != directory {
 		t.Fatal("test workbook was not isolated in the test directory")
 	}
 }
@@ -384,7 +384,7 @@ func TestLocalBillingSyncAcknowledgesOnlyTheExportedVersion(t *testing.T) {
 
 func TestDeviceBillingWorkbookAndIdentitySurviveStoreRestart(t *testing.T) {
 	directory := t.TempDir()
-	config := BillingConfig{Enabled: true, WorkbookPath: filepath.Join(directory, "billing.xlsx")}
+	config := BillingConfig{Enabled: true, Directory: directory}
 	first := &BillingStore{}
 	if err := first.open(config); err != nil {
 		t.Fatal(err)
@@ -399,13 +399,12 @@ func TestDeviceBillingWorkbookAndIdentitySurviveStoreRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	deviceID := first.deviceID
-	first.close()
 
 	restarted := &BillingStore{}
 	if err := restarted.open(config); err != nil {
 		t.Fatal(err)
 	}
-	defer restarted.close()
+
 	sessions, err := restarted.sessions("", "")
 	if err != nil {
 		t.Fatal(err)
@@ -419,9 +418,12 @@ func TestDeviceBillingWorkbookAndIdentitySurviveStoreRestart(t *testing.T) {
 func TestIndependentDeviceBillingStoresRetainHistoryOfflineAcrossRestarts(t *testing.T) {
 	const deviceCount = 5
 	deviceIDs := make(map[string]bool, deviceCount)
+	oldName := appConfig.FriendlyName
+	defer func() { appConfig.FriendlyName = oldName }()
 	for i := range deviceCount {
+		appConfig.FriendlyName = fmt.Sprintf("PC-%d", i)
 		directory := t.TempDir()
-		config := BillingConfig{Enabled: true, WorkbookPath: filepath.Join(directory, billingWorkbookName)}
+		config := BillingConfig{Enabled: true, Directory: directory}
 		store := &BillingStore{}
 		if err := store.open(config); err != nil {
 			t.Fatalf("open device %d billing store: %v", i+1, err)
@@ -442,7 +444,6 @@ func TestIndependentDeviceBillingStoresRetainHistoryOfflineAcrossRestarts(t *tes
 			t.Fatalf("device %d has an empty or duplicate stable ID %q", i+1, created.DeviceID)
 		}
 		deviceIDs[created.DeviceID] = true
-		store.close()
 
 		restarted := &BillingStore{}
 		if err := restarted.open(config); err != nil {
@@ -464,16 +465,15 @@ func TestIndependentDeviceBillingStoresRetainHistoryOfflineAcrossRestarts(t *tes
 			got.StartedAt != created.StartedAt || got.EndedAt != "" || got.CreatedAt != created.CreatedAt {
 			t.Fatalf("device %d did not retain its complete local session record: %+v", i+1, got)
 		}
-		restarted.close()
+
 	}
 }
 
 func TestDailyReportUsesAsiaKolkataSessionStartDateAndFlagsIncompleteSync(t *testing.T) {
 	configureBillingTest(t)
 	hub := BillingStore{
-		enabled:   true,
-		path:      filepath.Join(t.TempDir(), "hub.xlsx"),
-		backupDir: filepath.Join(t.TempDir(), "hub-backups"),
+		enabled: true,
+		path:    t.TempDir(),
 	}
 	session := Session{
 		ID: "S-midnight", DeviceID: "PC-01", PCID: "pc-01", PCName: "PC 1",

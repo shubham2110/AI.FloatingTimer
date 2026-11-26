@@ -16,8 +16,11 @@ import (
 func isolateDiscovery(t *testing.T) {
 	t.Helper()
 	previousConfig, previousPCs, previousPath := appConfig, store.snapshot(), store.path
+	previousVerified := store.verifiedOnly
+	store.verifiedOnly = false
 	previousTimers := virtualTimers.items
 	t.Cleanup(func() {
+		store.verifiedOnly = previousVerified
 		appConfig = previousConfig
 		store.PCs, store.path = previousPCs, previousPath
 		virtualTimers.items = previousTimers
@@ -86,12 +89,29 @@ func TestDiscoveryRegistersManifestWithoutStatusProbes(t *testing.T) {
 		discoveryState.last, discoveryState.running = previousResult, previousRunning
 		discoveryState.Unlock()
 	})
+	_, _, err := store.edit("", PC{Name: "Previous", Address: server.URL}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, ok := registeredPCByAddress(server.URL)
+	if !ok {
+		t.Fatal("missing fixture")
+	}
+	if _, _, err = store.edit(old.ID, PC{}, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = store.edit("", PC{Name: "Offline", Address: "http://127.0.0.1:1"}, false); err != nil {
+		t.Fatal(err)
+	}
 	performDiscovery(true)
-	if identityCalls.Load() != 1 || peerCalls.Load() != 1 || statusCalls.Load() != 0 {
+	if identityCalls.Load() != 1 || peerCalls.Load() != 0 || statusCalls.Load() != 0 {
 		t.Fatalf("unexpected requests: identity=%d peers=%d status=%d", identityCalls.Load(), peerCalls.Load(), statusCalls.Load())
 	}
-	if discoveryState.last.HostsFound != 1 || discoveryState.last.Found != 3 || len(store.list()) != 3 {
+	if discoveryState.last.HostsFound != 1 || discoveryState.last.Found != 3 {
 		t.Fatalf("host/timer counts wrong: %+v, %+v", discoveryState.last, store.list())
+	}
+	if _, ok := registeredPCByAddress("http://127.0.0.1:1"); ok {
+		t.Fatal("manual scan retained stale address")
 	}
 	for _, path := range []string{"", "/1", "/20"} {
 		pc, ok := store.find(stablePCID(server.URL + path))
@@ -214,5 +234,28 @@ func TestDistributionSendsAllTimersOncePerHost(t *testing.T) {
 	results := distributePeers(context.Background(), store.active())
 	if len(results) != 1 || results[0].Error != "" || calls.Load() != 1 {
 		t.Fatalf("expected one host send: %+v (%d calls)", results, calls.Load())
+	}
+}
+
+func TestManualDiscoveryHidesIndirectRecordsAndCleansOnlyUncheckedTimers(t *testing.T) {
+	s := testStore(t)
+	host := PC{Name: "Host", Address: "http://192.0.2.1:18081"}
+	child := PC{Name: "Console", Address: host.Address + "/1"}
+	mergeRecords(t, s, host, child)
+	items := s.list()
+	if _, err := s.setActive(items[1].ID, false); err != nil {
+		t.Fatal(err)
+	}
+	s.verifiedOnly = true
+	mergeRecords(t, s, PC{Name: "Stale", Address: "http://192.0.2.2:18081"}, PC{Name: "Unreachable", Address: "http://169.254.42.126:18081"})
+	if len(s.active()) != 1 || len(s.list()) != 3 {
+		t.Fatalf("unexpected registry: %+v", s.list())
+	}
+	n, err := s.cleanUnselected()
+	if err != nil || n != 1 {
+		t.Fatalf("cleanup: %d %v", n, err)
+	}
+	if pc, ok := s.find(items[0].ID); !ok || pc.Address != host.Address {
+		t.Fatal("cleanup removed the checked host")
 	}
 }

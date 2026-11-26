@@ -38,7 +38,6 @@ import (
 	"time"
 	"unsafe"
 
-	"overlay-timer/internal/httpcheck"
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/canvas"
@@ -46,6 +45,7 @@ import (
 	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+	"overlay-timer/internal/httpcheck"
 )
 
 // --- CONFIGURATION CONSTANTS ---
@@ -130,6 +130,8 @@ type DiscoveryConfig struct {
 }
 
 type OnBehalfConfig struct {
+	PricingCategories     []string               `json:"pricing_categories"`
+	PricingGroup          string                 `json:"pricing_group,omitempty"`
 	ID                    string                 `json:"id"`
 	Name                  string                 `json:"name"`
 	ShowCommand           []string               `json:"show_command"`
@@ -142,6 +144,8 @@ type AppConfig struct {
 	KillOnTimeUp          bool                   `json:"kill_on_time_up"`
 	AppsToCloseOnTimeUp   []string               `json:"apps_to_close_on_time_up"`
 	ForceKillAfterSeconds int                    `json:"force_kill_after_seconds"`
+	PricingCategories     []string               `json:"pricing_categories"`
+	PricingGroup          string                 `json:"pricing_group"`
 	FriendlyName          string                 `json:"friendly_name"`
 	TimerPort             int                    `json:"timer_port"`
 	UIDiscoveryPort       int                    `json:"ui_discovery_port"`
@@ -160,6 +164,7 @@ func defaultAppConfig() AppConfig {
 		ForceKillAfterSeconds: 2,
 		TimerPort:             DefaultTimerPort,
 		UIDiscoveryPort:       DefaultUIPort,
+		PricingGroup:          "PC Pro",
 		Billing:               BillingConfig{Enabled: true},
 		SpecialCommands:       []SpecialCommandConfig{},
 		CommandTimeoutSeconds: 10,
@@ -247,6 +252,26 @@ func initConfig() string {
 		logf("config", "invalid config at %s: %v; using defaults", configPath, err)
 		return configPath
 	}
+	// Add the group to older installations while retaining any extension settings.
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(data, &raw) == nil && raw["pricing_group"] == nil {
+		raw["pricing_group"], _ = json.Marshal(loaded.PricingGroup)
+		updated, err := json.MarshalIndent(raw, "", "  ")
+		if err == nil {
+			err = os.WriteFile(configPath+".tmp", append(updated, '\n'), 0644)
+		}
+		if err == nil {
+			err = os.Rename(configPath+".tmp", configPath)
+		}
+		if err != nil {
+			logf("config", "could not persist pricing group: %v", err)
+		}
+	}
+	var previousNames struct {
+		Names []string `json:"previous_friendly_names"`
+	}
+	_ = json.Unmarshal(data, &previousNames)
+	configuredNames.previous = previousNames.Names
 	appConfig = loaded
 	normalizeAppConfig()
 	logf("config", "loaded config from %s: name=%q timer_port=%d ui_port=%d", configPath, configuredFriendlyName(), appConfig.TimerPort, appConfig.UIDiscoveryPort)
@@ -368,11 +393,11 @@ func normalizeAppConfig() {
 	if appConfig.ForceKillAfterSeconds < 0 {
 		appConfig.ForceKillAfterSeconds = 0
 	}
-	normalizeBillingConfig()
+
 }
 
 func configuredFriendlyName() string {
-	if name := strings.TrimSpace(appConfig.FriendlyName); name != "" {
+	if name := strings.TrimSpace(editedName("", appConfig.FriendlyName)); name != "" {
 		return name
 	}
 	if name, err := os.Hostname(); err == nil {
@@ -915,6 +940,7 @@ func notifyManagerExtension(seconds int) (bool, int, error) {
 		PCID: localPC.ID, PCAddress: localPC.Address, Seconds: seconds, RequestID: requestID,
 	}
 	if billingStore.enabled {
+		extension.Target = &billingTarget{Owner: configuredFriendlyName(), Path: ""}
 		result, err := extendSessionForSystem(extension, true)
 		if err != nil {
 			return false, 0, err

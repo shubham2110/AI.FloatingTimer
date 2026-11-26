@@ -6,8 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -16,20 +20,25 @@ import (
 // Address is the shared registry key; ID remains stable within each manager.
 // Deleted records are retained so an offline peer cannot resurrect a removal.
 type PC struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Address   string    `json:"address"`
-	UIPort    int       `json:"ui_port,omitempty"`
-	UpdatedAt time.Time `json:"updated_at,omitempty"`
-	LastSeen  time.Time `json:"last_seen,omitempty"`
-	Deleted   bool      `json:"deleted,omitempty"`
-	Inactive  bool      `json:"inactive,omitempty"` // Local preference; never imported from peers.
+	Owner             string    `json:"owner,omitempty"`
+	Missing           bool      `json:"missing,omitempty"`
+	PricingCategories []string  `json:"pricing_categories"`
+	PricingGroup      string    `json:"pricing_group,omitempty"`
+	ID                string    `json:"id"`
+	Name              string    `json:"name"`
+	Address           string    `json:"address"`
+	UIPort            int       `json:"ui_port,omitempty"`
+	UpdatedAt         time.Time `json:"updated_at,omitempty"`
+	LastSeen          time.Time `json:"last_seen,omitempty"`
+	Deleted           bool      `json:"deleted,omitempty"`
+	Inactive          bool      `json:"inactive,omitempty"` // Local preference; never imported from peers.
 }
 
 type PCStore struct {
 	sync.RWMutex
-	path string
-	PCs  []PC
+	verifiedOnly bool
+	path         string
+	PCs          []PC
 }
 
 func (s *PCStore) load() error {
@@ -52,8 +61,16 @@ func (s *PCStore) load() error {
 	s.Lock()
 	defer s.Unlock()
 	s.PCs = nil
+	dropped := false
 	for _, pc := range records {
+		if excludedAddress(pc.Address) {
+			dropped = true
+			continue
+		}
 		s.mergeLocked(pc)
+	}
+	if dropped {
+		return s.commitLocked(s.PCs)
 	}
 	return nil
 }
@@ -98,6 +115,16 @@ func (s *PCStore) find(id string) (PC, bool) {
 	return PC{}, false
 }
 
+func excludedAddress(address string) bool {
+	u, err := url.Parse(address)
+	return err == nil && excludedHost(u.Hostname())
+}
+
+func excludedHost(host string) bool {
+	ip := net.ParseIP(host).To4()
+	return ip != nil && ip[0] == 169
+}
+
 func normalizePC(pc *PC) error {
 	address, err := normalizeAddress(pc.Address)
 	if err != nil {
@@ -131,6 +158,9 @@ func newerPC(a, b PC) bool {
 }
 
 func (s *PCStore) mergeLocked(pc PC) bool {
+	if excludedAddress(pc.Address) {
+		return false
+	}
 	for i, old := range s.PCs {
 		if old.Address != pc.Address {
 			continue
@@ -140,7 +170,17 @@ func (s *PCStore) mergeLocked(pc PC) bool {
 			next = pc
 			next.ID = old.ID
 		}
+		if next.Owner == "" {
+			next.Owner = old.Owner
+		}
+		if pc.Owner != "" && !pc.LastSeen.Before(old.LastSeen) {
+			next.Owner = pc.Owner
+		}
 		next.Inactive = old.Inactive
+		next.Missing = old.Missing
+		if next.PricingGroup == "" {
+			next.PricingGroup = old.PricingGroup
+		}
 		if pc.LastSeen.After(next.LastSeen) {
 			next.LastSeen = pc.LastSeen
 		}
@@ -151,7 +191,7 @@ func (s *PCStore) mergeLocked(pc PC) bool {
 			next.UIPort = pc.UIPort
 		}
 		s.PCs[i] = next
-		return next != old
+		return !reflect.DeepEqual(next, old)
 	}
 	pc.ID = s.availableID(pc.ID, pc.Address)
 	s.PCs = append(s.PCs, pc)
@@ -178,6 +218,7 @@ func (s *PCStore) availableID(id, address string) string {
 func (s *PCStore) merge(peers []PC) (int, error) {
 	for i := range peers {
 		peers[i].Inactive = false
+		peers[i].Missing = false
 		if err := normalizePC(&peers[i]); err != nil {
 			return 0, err
 		}
@@ -187,6 +228,9 @@ func (s *PCStore) merge(peers []PC) (int, error) {
 	previous := append([]PC{}, s.PCs...)
 	changed := 0
 	for _, pc := range peers {
+		if s.verifiedOnly {
+			pc.Missing = true
+		}
 		if s.mergeLocked(pc) {
 			changed++
 		}
@@ -199,11 +243,37 @@ func (s *PCStore) merge(peers []PC) (int, error) {
 	return changed, nil
 }
 
+// A cleanup is one transaction. Preserve tombstones for peers that still have the old list.
+func (s *PCStore) cleanUnselected() (int, error) {
+	s.Lock()
+	defer s.Unlock()
+	previous := append([]PC(nil), s.PCs...)
+	count := 0
+	for i, pc := range s.PCs {
+		if pc.Deleted || !pc.Inactive {
+			continue
+		}
+		s.PCs[i].Deleted = true
+		s.PCs[i].UpdatedAt = time.Now().UTC()
+		count++
+	}
+	if count == 0 {
+		return 0, nil
+	}
+	if err := s.commitLocked(previous); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 // edit handles local add/update/remove as one durable transaction.
 func (s *PCStore) edit(id string, pc PC, remove bool) (PC, int, error) {
 	if !remove {
 		if err := normalizePC(&pc); err != nil {
 			return pc, http.StatusBadRequest, err
+		}
+		if excludedAddress(pc.Address) {
+			return pc, 400, errors.New("169.x.x.x addresses are excluded")
 		}
 		pc.Deleted, pc.Inactive, pc.LastSeen = false, false, time.Time{}
 	}
@@ -241,6 +311,11 @@ func (s *PCStore) edit(id string, pc PC, remove bool) (PC, int, error) {
 			old := s.PCs[index]
 			pc.ID, pc.LastSeen = old.ID, old.LastSeen
 			pc.Inactive = old.Inactive
+			if pc.Owner == "" {
+				pc.Owner = old.Owner
+			}
+			pc.PricingCategories = old.PricingCategories
+			pc.PricingGroup = old.PricingGroup
 			if pc.UIPort == 0 {
 				pc.UIPort = old.UIPort
 			}
@@ -270,7 +345,7 @@ func (s *PCStore) edit(id string, pc PC, remove bool) (PC, int, error) {
 func (s *PCStore) active() []PC {
 	result := []PC{}
 	for _, pc := range s.list() {
-		if !pc.Inactive {
+		if !pc.Inactive && !pc.Missing {
 			result = append(result, pc)
 		}
 	}
@@ -290,4 +365,54 @@ func (s *PCStore) setActive(id string, active bool) (PC, error) {
 		return pc, s.commitLocked(previous)
 	}
 	return PC{}, errors.New("PC not found")
+}
+
+// replaceDiscovery commits only directly observed timers. Existing addresses
+// keep their IDs so billing and open detail views can still resolve them.
+func (s *PCStore) replaceDiscovery(observed map[string]PC) error {
+	s.Lock()
+	defer s.Unlock()
+	previous := s.PCs
+	s.PCs = nil
+	addresses := make([]string, 0, len(observed))
+	for address := range observed {
+		addresses = append(addresses, address)
+	}
+	sort.Strings(addresses)
+	for _, address := range addresses {
+		pc := observed[address]
+		for _, old := range previous {
+			if old.Address == address {
+				pc.ID = old.ID
+				break
+			}
+		}
+		pc.LastSeen = time.Now().UTC()
+		pc.UpdatedAt = pc.LastSeen
+		s.mergeLocked(pc)
+	}
+	if err := s.commitLocked(previous); err != nil {
+		return err
+	}
+	s.verifiedOnly = true
+	return nil
+}
+
+func (s *PCStore) renameAliases(target PC, name, owner string) error {
+	s.Lock()
+	defer s.Unlock()
+	previous := append([]PC(nil), s.PCs...)
+	now := time.Now().UTC()
+	for i, pc := range s.PCs {
+		if systemGroup(pc) == systemGroup(target) {
+			pc.Name = name
+			pc.Owner = owner
+			pc.UpdatedAt = now
+		} else if billingPath(target.Address) == "" && target.Owner != "" && pc.Owner == target.Owner {
+			pc.Owner = owner
+			pc.UpdatedAt = now
+		}
+		s.PCs[i] = pc
+	}
+	return s.commitLocked(previous)
 }

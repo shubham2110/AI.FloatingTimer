@@ -44,20 +44,25 @@ func startManagementService(listener net.Listener) {
 		log.Printf("could not load PC list: %v", err)
 		return
 	}
+	loadPricing()
 	if err := billingStore.open(appConfig.Billing); err != nil {
 		log.Printf("could not open billing database: %v", err)
 	}
-	defer billingStore.close()
+
 	observeLocalTimers()
 	if appConfig.Billing.Enabled {
 		startBillingSyncScheduler()
+		go watchStoppedSessions()
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", healthHandler)
 	mux.HandleFunc("/", servePage)
 	mux.HandleFunc("/api/pcs", pcsHandler)
 	mux.HandleFunc("/api/pcs/", pcHandler)
+	mux.HandleFunc("/internal/api/node/name", systemRenameHandler)
+	mux.HandleFunc("/internal/api/node/config", configurationEndpoint)
 	registerDiscoveryHandlers(mux)
+	mux.HandleFunc("/api/themes", themesHandler)
 	registerBillingHandlers(mux)
 	server := &http.Server{
 		Addr: fmt.Sprintf(":%d", appConfig.UIDiscoveryPort), Handler: requestLogMiddleware(cors(headers(mux))),
@@ -167,7 +172,20 @@ func readPC(r *http.Request) (PC, error) {
 
 func pcsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
-		writeJSON(w, 200, store.list())
+		visible := []PC{}
+		for _, pc := range store.list() {
+			if !pc.Missing {
+				if t := targetForPC(pc); t != nil {
+					pc.Owner = t.Owner
+					if owner, ok := ownedBillingTimer(t); ok {
+						pc.PricingGroup = owner.PricingGroup
+						pc.PricingCategories = owner.PricingCategories
+					}
+				}
+				visible = append(visible, pc)
+			}
+		}
+		writeJSON(w, 200, visible)
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -196,6 +214,15 @@ func pcHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(parts) == 1 {
 		handleRecord(w, r, parts[0])
+		return
+	}
+	if len(parts) == 2 && parts[1] == "config" {
+		pc, ok := store.find(parts[0])
+		if !ok {
+			writeJSON(w, 404, map[string]string{"error": "system not found"})
+			return
+		}
+		systemConfigForPC(w, r, pc)
 		return
 	}
 	if len(parts) == 2 && parts[1] == "active" && r.Method == http.MethodPut {
@@ -241,6 +268,34 @@ func handleRecord(w http.ResponseWriter, r *http.Request, id string) {
 		pc, err = readPC(r)
 		if err != nil {
 			writeJSON(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	if !remove {
+		old, ok := store.find(id)
+		if !ok {
+			writeJSON(w, 404, map[string]string{"error": "PC not found"})
+			return
+		}
+		if err := normalizePC(&pc); err != nil || excludedAddress(pc.Address) {
+			writeJSON(w, 400, map[string]string{"error": "invalid or excluded address"})
+			return
+		}
+		for _, other := range store.list() {
+			if other.ID != id && other.Address == pc.Address {
+				writeJSON(w, 409, map[string]string{"error": "a PC with this address already exists"})
+				return
+			}
+		}
+		change := systemRename{Name: pc.Name, Path: billingPath(old.Address)}
+		var node NodeIdentity
+		if err := callBillingPeerContext(r.Context(), old, http.MethodPut, "/internal/api/node/name", change, &node); err != nil {
+			writeJSON(w, 502, map[string]string{"error": err.Error()})
+			return
+		}
+		pc.Owner = node.Name
+		if err := store.renameAliases(old, pc.Name, node.Name); err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
 		}
 	}
