@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "name": "Ocean",
+  "layout": "experimental",
+  "colors": {
+    "accent": "#087e8b",
+    "bg": "#e7f3f5",
+    "panel": "#fafdfe",
+    "text": "#102a43"
+  },
+  "columns": 3,
+  "mobileColumns": 2
+}
