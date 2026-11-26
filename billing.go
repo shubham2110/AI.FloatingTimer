@@ -77,9 +77,10 @@ func isStandaloneSnackSale(session Session) bool {
 }
 
 type continuedBill struct {
-	Amount       int `json:"amount"`
-	SpentSeconds int `json:"spent_seconds"`
-	PriorMinutes int `json:"prior_minutes"`
+	Amount       int  `json:"amount"`
+	SpentSeconds int  `json:"spent_seconds"`
+	PriorMinutes int  `json:"prior_minutes"`
+	PriorSeconds *int `json:"prior_seconds,omitempty"`
 }
 type billingSessionLink struct {
 	Owner           string `json:"owner,omitempty"`
@@ -321,6 +322,25 @@ func sessionTimestamp(value string) (time.Time, error) {
 		return parsed, nil
 	}
 	return time.Time{}, fmt.Errorf("invalid session timestamp %q", value)
+}
+
+func (s Session) plannedSeconds(start time.Time) int {
+	if expected, err := sessionTimestamp(s.ExpectedEndAt); err == nil && !start.IsZero() && !expected.Before(start) {
+		return int(expected.Sub(start).Seconds())
+	}
+	return max(0, (s.PurchasedMinutes+s.AdditionalMinutes)*60)
+}
+
+func (s Session) gameplayLimitSeconds(start time.Time) int {
+	planned := s.plannedSeconds(start)
+	if s.Continued == nil {
+		return planned
+	}
+	prior := s.Continued.PriorMinutes * 60
+	if s.Continued.PriorSeconds != nil {
+		prior = *s.Continued.PriorSeconds
+	}
+	return s.Continued.SpentSeconds + max(0, planned-prior)
 }
 
 func parseSession(r []string) Session {
@@ -800,6 +820,10 @@ func (s *BillingStore) updateAtStop(id, action string, minutes, amount int, stop
 				return Session{}, e
 			}
 			entry.Amount = max(0, entry.Amount-x.EstimatedAmount)
+			start, e := sessionTimestamp(x.StartedAt)
+			if e == nil {
+				x.ExpectedEndAt = start.Add(time.Duration(x.plannedSeconds(start)+minutes*60) * time.Second).Format(time.RFC3339Nano)
+			}
 			x.PurchasedMinutes += minutes
 			x.FinalAmount += entry.Amount
 			x.EstimatedAmount = x.FinalAmount - x.Snacks
@@ -810,10 +834,6 @@ func (s *BillingStore) updateAtStop(id, action string, minutes, amount int, stop
 				ID:        "P-" + time.Now().UTC().Format("20060102150405.000000000"),
 				Timestamp: now, Amount: entry.Amount, Status: "paid",
 			})
-			start, e := sessionTimestamp(x.StartedAt)
-			if e == nil {
-				x.ExpectedEndAt = start.Add(time.Duration(x.PurchasedMinutes+x.AdditionalMinutes) * time.Minute).Format(time.RFC3339Nano)
-			}
 		case "correct":
 			if minutes < 0 || minutes > 1440 || amount < 0 || amount > 9999999 {
 				return Session{}, errors.New("invalid duration or amount")
@@ -883,10 +903,11 @@ func (s *BillingStore) updateAtStop(id, action string, minutes, amount int, stop
 			x.EndedAt = ended.In(billingTimezone).Format(time.RFC3339Nano)
 			if resumed, ok := lastResume(x); ok {
 				if !resumed.IsZero() {
-					x.ActualDurationSeconds += max(0, int(ended.Sub(resumed).Seconds()))
+					remaining := max(0, x.gameplayLimitSeconds(started)-x.ActualDurationSeconds)
+					x.ActualDurationSeconds += min(remaining, max(0, int(ended.Sub(resumed).Seconds())))
 				}
 			} else if !x.TimeCorrected {
-				x.ActualDurationSeconds = max(0, int(ended.Sub(started).Seconds()))
+				x.ActualDurationSeconds = min(x.gameplayLimitSeconds(started), max(0, int(ended.Sub(started).Seconds())))
 			}
 		default:
 			return Session{}, errors.New("unknown session action")
@@ -996,6 +1017,11 @@ func (s *BillingStore) extendSessionRecord(id, pcID, pcAddress string, minutes, 
 		}
 
 		now := time.Now().In(billingTimezone).Format(time.RFC3339Nano)
+		started, err := sessionTimestamp(x.StartedAt)
+		if err != nil {
+			return Session{}, fmt.Errorf("session %q has no valid start time: %w", x.ID, err)
+		}
+		x.ExpectedEndAt = started.Add(time.Duration(x.plannedSeconds(started)+minutes*60) * time.Second).Format(time.RFC3339Nano)
 		x.PurchasedMinutes += minutes
 		x.FinalAmount += amount
 		x.EstimatedAmount = x.FinalAmount - x.Snacks
@@ -1016,11 +1042,6 @@ func (s *BillingStore) extendSessionRecord(id, pcID, pcAddress string, minutes, 
 			ID: requestKey, Timestamp: now, Amount: amount, Status: x.PaymentStatus,
 			ExtensionMinutes: minutes, RemainingSeconds: remaining,
 		})
-		started, err := sessionTimestamp(x.StartedAt)
-		if err != nil {
-			return Session{}, fmt.Errorf("session %q has no valid start time: %w", x.ID, err)
-		}
-		x.ExpectedEndAt = started.Add(time.Duration(x.PurchasedMinutes+x.AdditionalMinutes) * time.Minute).Format(time.RFC3339Nano)
 		if err := f.put(stored.Row, x); err != nil {
 			return Session{}, err
 		}
