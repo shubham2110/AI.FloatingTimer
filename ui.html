@@ -542,6 +542,7 @@
     </style>
   </head>
   <body>
+    <datalist id="customerNameSuggestions"></datalist>
     <header>
       <div class="brand"><h1>Overlay Timer Manager</h1>
         <div class="metrics">
@@ -553,7 +554,7 @@
               id="metricPaused">0</b></div>
           <div class="metric"><span class="hint">Offline</span><b
               id="metricOffline">0</b></div>
-          <div class="metric"><span class="hint">Today's billed</span><b
+          <div class="metric"><span class="hint">Today's revenue</span><b
               id="metricRevenue">--</b></div>
         </div>
       </div>
@@ -572,7 +573,7 @@
             <label class="nav-setting">Dashboard theme
               <select id="dashboardStyle" onchange="setDashboardStyle(this.value)">
                 <option value="legacy">Legacy</option><option value="new">New</option>
-                <option value="experimental" selected>Experimental</option>
+                <option value="experimental">Experimental</option><option value="tryout" selected>TryOut</option>
               </select>
             </label>
             <label class="nav-setting">Upload theme <input id="themeUpload" type="file" accept=".json,application/json" onchange="uploadTheme(this)"></label>
@@ -618,6 +619,7 @@
             <option value>All pricing groups</option>
           </select>
         </div>
+        <small id="customerSuggestionsStatus" role="status"></small>
         <div id="dashboardGrid" class="dashboard-grid"
           style="margin-top: 16px"></div>
         <div id="noFilterMatch" class="panel empty" hidden>No systems match
@@ -635,7 +637,8 @@
               placeholder="Search bills" oninput="renderTodayBills()">
           </div>
           <div class="row"><details><summary>Columns</summary><div id="billColumnChoices"></div></details>
-          <span id="selectedBillTotals"></span><button id="paySelected" hidden onclick="paySelectedBills(this)">Mark selected paid</button></div>
+          <span id="selectedBillTotals"></span><button id="paySelected" hidden onclick="paySelectedBills(this)">Mark selected paid</button>
+          <button id="removeSelected" class="danger" hidden onclick="removeSelectedBills(this)">Remove selected</button></div>
           <small id="todayPaymentStatus" role="status"></small><div id="todayBills" style="overflow-x:auto"></div>
         </section>
       </section><section id="reports" hidden>
@@ -701,9 +704,15 @@
                 billing records</div>
             </div>
             <div class="row">
+              <input id="historyDate" type="date" aria-label="Filter history by date"
+                onchange="renderHistory()" />
+              <select id="historyPC" aria-label="Filter history by system"
+                onchange="renderHistory()">
+                <option value>All systems</option>
+              </select>
               <input id="historySearch" placeholder="Search"
-                oninput="loadHistory()" />
-              <select id="historyPayment" onchange="loadHistory()">
+                oninput="renderHistory()" />
+              <select id="historyPayment" onchange="renderHistory()">
                 <option value>All payments</option>
                 <option value="unpaid">Unpaid</option>
                 <option value="partial">Partial</option>
@@ -848,7 +857,7 @@
       <form onsubmit="saveBill(event)">
         <h2 id="billEditorTitle">Edit bill</h2>
         <div class="bill-fields">
-          <label>Customer name <input id="billCustomer" maxlength="120"></label>
+          <label>Customer name <input id="billCustomer" maxlength="120" list="customerNameSuggestions"></label>
           <label>Customers <input id="billPlayers" type="number" min="1" max="4"></label>
           <label>System <select id="billSystem" onchange="billSystemChanged()"></select></label>
           <label>PC name on bill <input id="billPCName" required maxlength="120"></label>
@@ -931,7 +940,7 @@
         }
       }
       const VIEW_SETTINGS_KEY="overlay-timer-dashboard-view-v1";
-      let dashboardView={style:"experimental",showUnits:false};
+      let dashboardView={style:"tryout",showUnits:false};
       const builtInThemes=["legacy","new","experimental","tryout"];
       const customThemes=new Map();
       const tryOutTheme={version:1,name:"TryOut",layout:"experimental",tileOrder:[],
@@ -1841,9 +1850,21 @@
       async function discoverNow() {
         const button = $("discoverButton");
         button.disabled = true;
-        $("discoveryStatus").textContent = "Discovery running...";
         try {
-          await request("/api/discovery/run", { method: "POST" });
+          const defaults = await request("/api/discovery/ranges");
+          const entered = prompt(
+            "Enter IPv4 CIDR range(s), separated by commas or spaces (for example, 192.168.1.0/24).",
+            (defaults.ranges || []).join(", "),
+          );
+          if (entered === null) return;
+          const ranges = entered.split(/[,\s]+/).filter(Boolean);
+          if (!ranges.length) throw new Error("Enter at least one IPv4 CIDR range.");
+          $("discoveryStatus").textContent = "Discovery running...";
+          await request("/api/discovery/run", {
+            method: "POST",
+            headers: {"Content-Type":"application/json"},
+            body: JSON.stringify({cidr_ranges:ranges}),
+          });
           discoveryRunning = true;
           listGeneration++;
           for (const p of pcs) cancelPCRequests(p.id);
@@ -2067,6 +2088,7 @@
           billingCatalog = Array.isArray(catalog.entries) ? catalog : billingCatalog;
           const sessions = await request("/api/sessions?status=open");
           activeBillingSessions = Array.isArray(sessions) ? sessions : [];
+          await loadCustomerNameSuggestions();
           if (previousCatalog !== JSON.stringify(billingCatalog.entries)) renderDashboard();
           renderBillingSessions(activeBillingSessions);
           await loadToday(); if (!$("reports").hidden) await Promise.all([loadHistory(), loadBillingReport()]);
@@ -2075,22 +2097,61 @@
         } catch (e) { $("billingStatus").hidden=false; $("billingStatus").textContent="Billing unavailable: "+e.message; }
       }
 
+      async function loadCustomerNameSuggestions() {
+        try {
+          const names = await request("/api/customers");
+          if (!Array.isArray(names) || names.some(name => typeof name !== "string")) {
+            throw new Error("Invalid customer-name response.");
+          }
+          $("customerNameSuggestions").innerHTML = names
+            .map(name => `<option value="${esc(name)}"></option>`).join("");
+          $("customerSuggestionsStatus").textContent = "";
+        } catch (error) {
+          $("customerSuggestionsStatus").textContent = "Customer suggestions unavailable: " + error.message;
+        }
+      }
+
       async function loadHistory() {
         try {
-          const query = new URLSearchParams({
-            search: $("historySearch").value,
-            payment_status: $("historyPayment").value,
-          });
-          const rows = await request("/api/sessions?" + query.toString());
-          $("historyRows").innerHTML = (Array.isArray(rows) ? rows : []).map(x => {
-            const payButton = x.final_amount > x.amount_paid
-              ? `<button onclick="sessionAction(${argument(x.id)},'pay',${argument(x.pc_id)})">Paid</button> `
-              : "";
-            return `<tr><td>${esc(x.id)}</td><td>${esc(x.pc_name)}</td><td>${esc(x.customer_name)}</td><td>${x.players}</td><td>${esc(x.started_at)}</td><td>${esc(x.ended_at || x.expected_end_at)}</td><td>${Number(x.purchased_minutes) + Number(x.additional_minutes)} min</td><td>${money(x.final_amount)}</td><td>${esc(x.payment_status)}</td><td>${payButton}<button onclick="sessionAction(${argument(x.id)},'close',${argument(x.pc_id)})">Close</button></td></tr>`;
-          }).join("") || "<tr><td colspan='10'>No billing sessions recorded.</td></tr>";
+          const rows = await request("/api/sessions");
+          historyBills = Array.isArray(rows) ? rows : [];
+          const selectedPC = $("historyPC").value;
+          const systems = new Map(historyBills.map(session => [session.pc_id, session.pc_name || session.pc_id]));
+          $("historyPC").innerHTML = `<option value>All systems</option>` +
+            [...systems].sort((a,b) => a[1].localeCompare(b[1]))
+              .map(([id,name]) => `<option value="${esc(id)}">${esc(name)}</option>`).join("");
+          $("historyPC").value = selectedPC;
+          renderHistory();
         } catch(e) {
           $("historyRows").innerHTML = `<tr><td colspan='10'>${esc(e.message)}</td></tr>`;
         }
+      }
+
+      function historySessionDate(value) {
+        const date = new Date(value);
+        if (!Number.isFinite(date.valueOf())) return "";
+        const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
+          timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit",
+        }).formatToParts(date).map(part => [part.type, part.value]));
+        return `${parts.year}-${parts.month}-${parts.day}`;
+      }
+
+      function renderHistory() {
+        const search = $("historySearch").value.trim().toLowerCase();
+        const payment = $("historyPayment").value;
+        const date = $("historyDate").value;
+        const pcID = $("historyPC").value;
+        const rows = historyBills.filter(session =>
+          (!search || `${session.id} ${session.pc_name} ${session.customer_name}`.toLowerCase().includes(search)) &&
+          (!payment || session.payment_status === payment) &&
+          (!date || historySessionDate(session.started_at) === date) &&
+          (!pcID || session.pc_id === pcID));
+        $("historyRows").innerHTML = rows.map(x => {
+            const payButton = x.final_amount > x.amount_paid
+              ? `<button onclick="sessionAction(${argument(x.id)},'pay',${argument(x.pc_id)})">Paid</button> `
+              : "";
+            return `<tr><td>${esc(x.id)}</td><td>${esc(x.pc_name)}</td><td>${esc(x.customer_name)}</td><td>${x.players}</td><td>${esc(x.started_at)}</td><td>${esc(x.ended_at || x.expected_end_at)}</td><td>${Number(x.purchased_minutes) + Number(x.additional_minutes)} min</td><td>${money(x.final_amount)}</td><td>${esc(x.payment_status)}</td><td><button onclick="openBillEditor(${argument(x.id)})">Edit</button>${payButton}<button onclick="sessionAction(${argument(x.id)},'close',${argument(x.pc_id)})">Close</button></td></tr>`;
+          }).join("") || "<tr><td colspan='10'>No billing sessions recorded.</td></tr>";
       }
 
       async function sessionAction(id, action, deviceId = "") { try { const session=activeBillingSessions.find(item=>item.id===id); await request("/api/sessions/"+encodeURIComponent(id)+"/"+action,{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"},{deviceId:deviceId||session?.pc_id||"",feature:"session-"+action}); await loadBilling(); } catch(e) { alert(e.message); } }
@@ -2124,11 +2185,11 @@
         if (!s.continued) return planned;
         return Math.ceil(s.continued.spent_seconds/60)+Math.max(0,planned-s.continued.prior_minutes);
       }
-      let todayBills = [], editingBill;
+      let todayBills = [], historyBills = [], editingBill;
       async function loadToday(){
         try {
           const report = await request("/api/billing/report?date=" + billingTodayDate());
-          $("metricRevenue").textContent = money(report.billed_amount);
+          $("metricRevenue").textContent = money(report.collected_amount ?? report.revenue);
           todayBills = [...(report.records || [])].reverse().sort((a,b) =>
             (Date.parse(b.created_at || b.started_at)||0) - (Date.parse(a.created_at || a.started_at)||0));
           renderTodayBills();
@@ -2175,6 +2236,36 @@
         catch(e){$("todayPaymentStatus").textContent=done+" marked paid. "+e.message;}
         finally{await loadBilling();button.disabled=false;}
       }
+      async function removeSelectedBills(button){
+        const rows=todayBills.filter(x=>selectedBills.has(x.id));
+        if(!rows.length)return;
+        const open=rows.filter(x=>x.status==="open").length;
+        const warning=open?` ${open} open session(s) will be skipped.`:"";
+        if(!confirm(`Remove ${rows.length} selected entries?${warning} This cannot be undone.`))return;
+        button.disabled=true;
+        let removed=0;
+        const failures=[];
+        try{
+          for(const row of rows){
+            if(row.status==="open"){
+              failures.push(row.id+": open sessions must be closed first.");
+              continue;
+            }
+            try{
+              await postCardSession("/api/sessions/"+encodeURIComponent(row.id)+"/edit",
+                {pc_id:row.pc_id,updated_at:row.updated_at,remove:true});
+              selectedBills.delete(row.id);
+              paymentDrafts.delete(row.id);
+              removed++;
+            }catch(error){failures.push(row.id+": "+error.message);}
+          }
+          $("todayPaymentStatus").textContent=removed+" removed."+
+            (failures.length?" Could not remove: "+failures.join("; "):"");
+        }finally{
+          await loadBilling();
+          button.disabled=false;
+        }
+      }
       function renderTodayBills() {
         const query=String($("todayBillsSearch").value||"").trim().toLocaleLowerCase();
         const seen=new Set(),columns=Object.keys(billColumns).filter(k=>shownBillColumns.includes(k));
@@ -2198,6 +2289,7 @@
         const selected=todayBills.filter(x=>selectedBills.has(x.id));
         $("selectedBillTotals").textContent=selected.length?selected.length+" selected · Total "+money(selected.reduce((n,x)=>n+x.final_amount,0))+" · Paid "+money(selected.reduce((n,x)=>n+x.amount_paid,0)):"";
         $("paySelected").hidden=!selected.length;
+        $("removeSelected").hidden=!selected.length;
         if(document.activeElement?.closest?.("#todayBills")?.contains(document.activeElement)&&document.activeElement.type==="number"&&!document.activeElement.disabled)return;
         $("todayBills").innerHTML=rows?`<table><thead><tr><th><input type="checkbox" aria-label="Select all visible bills" ${filteredBills.every(x=>selectedBills.has(x.id))?"checked":""} onchange="selectBill(null,this.checked)"></th>${columns.map(k=>"<th>"+billColumns[k]+"</th>").join("")}<th>Actions</th></tr></thead><tbody>${rows}</tbody></table>`:(query?"No bills match your search.":"No bills today.");
       }
@@ -2243,7 +2335,7 @@
         if (system) $("billPCName").value = system.name;
       }
       function openBillEditor(id) {
-        const bill = todayBills.find(b => b.id === id);
+        const bill = todayBills.find(b => b.id === id) || historyBills.find(b => b.id === id);
         if (!bill) return;
         editingBill = bill;
         const choices = new Map([[bill.pc_id,bill.pc_name]]);
@@ -2381,7 +2473,7 @@
       function cardSessionFormHTML(p){
         const state=sessionFormFor(p.id).state, id=esc(p.id), arg=argument(p.id);
         return `<div class="session-customer-fields">
-          <input id="sf-customer-${id}" aria-label="Customer name" placeholder="Customer name" maxlength="120"
+          <input id="sf-customer-${id}" aria-label="Customer name" placeholder="Customer name" maxlength="120" list="customerNameSuggestions"
             value="${esc(state.customer)}" oninput="cardSessionInput(${arg}, 'customer', this.value)">
           <select id="sf-players-${id}" aria-label="Customers" onchange="cardSessionInput(${arg}, 'players', this.value)">
             <option value="">—</option>

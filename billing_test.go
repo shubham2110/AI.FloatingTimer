@@ -73,6 +73,34 @@ func TestBillingAPIIsAccessibleWithoutCredentials(t *testing.T) {
 	}
 }
 
+func TestCustomerSuggestionsReturnDistinctSavedNames(t *testing.T) {
+	configureBillingTest(t)
+	ledger := &dailyLedger{changed: make(map[string]bool)}
+	for i, session := range []Session{
+		{ID: "S-one", PCID: "pc-one", CustomerName: "Alice", StartedAt: "2026-03-21T11:00:00+05:30", Status: "closed"},
+		{ID: "S-two", PCID: "pc-two", CustomerName: " alice ", StartedAt: "2026-03-21T12:00:00+05:30", Status: "closed"},
+		{ID: "S-three", PCID: "pc-one", CustomerName: "Bob", StartedAt: "2026-03-22T11:00:00+05:30", Status: "closed"},
+		{ID: "S-four", PCID: "pc-one", CustomerName: " ", StartedAt: "2026-03-22T12:00:00+05:30", Status: "closed"},
+	} {
+		if err := ledger.put(i, session); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := billingStore.saveLocked(ledger); err != nil {
+		t.Fatal(err)
+	}
+
+	mux := http.NewServeMux()
+	registerBillingHandlers(mux)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/customers", nil))
+	var names []string
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &names) != nil ||
+		!reflect.DeepEqual(names, []string{"Alice", "Bob"}) {
+		t.Fatalf("customer suggestions returned HTTP %d: %s", response.Code, response.Body.String())
+	}
+}
+
 func TestBillingSessionLinkHandlerScopesLinkToExactTimer(t *testing.T) {
 	configureBillingTest(t)
 	const timerAddress = "http://192.0.2.10:8080/1"

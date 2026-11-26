@@ -152,6 +152,13 @@ func observePC(pc PC) {
 }
 
 func registerDiscoveryHandlers(mux *http.ServeMux) {
+	mux.HandleFunc("/api/discovery/ranges", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "GET required"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string][]string{"ranges": configuredRangeStrings()})
+	})
 	mux.HandleFunc("/api/node", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeJSON(w, 405, map[string]string{"error": "GET required"})
@@ -170,6 +177,22 @@ func registerDiscoveryHandlers(mux *http.ServeMux) {
 			writeJSON(w, 405, map[string]string{"error": "POST required"})
 			return
 		}
+		var request struct {
+			CIDRRanges []string `json:"cidr_ranges"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192)).Decode(&request); err != nil && err != io.EOF {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid discovery ranges"})
+			return
+		}
+		var ranges []string
+		if len(request.CIDRRanges) > 0 {
+			var err error
+			ranges, err = validateDiscoveryRanges(request.CIDRRanges)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+		}
 		if !beginDiscovery() {
 			writeJSON(w, 409, map[string]string{"error": "discovery already running"})
 			return
@@ -177,7 +200,7 @@ func registerDiscoveryHandlers(mux *http.ServeMux) {
 		discoveryState.Lock()
 		discoveryState.last = DiscoveryResult{}
 		discoveryState.Unlock()
-		go performDiscovery(true)
+		go performDiscoveryWithRanges(true, ranges)
 		writeJSON(w, 202, map[string]string{"status": "started"})
 	})
 	mux.HandleFunc("/api/discovery/clean-unselected", func(w http.ResponseWriter, r *http.Request) {
@@ -314,15 +337,44 @@ func uiNodeReachable(host string, port int) bool {
 	return response.StatusCode == http.StatusOK
 }
 
-func configuredNetworks() []*net.IPNet {
+func validateDiscoveryRanges(ranges []string) ([]string, error) {
+	validated := make([]string, 0, len(ranges))
+	seen := make(map[string]bool, len(ranges))
+	for _, raw := range ranges {
+		value := strings.TrimSpace(raw)
+		_, network, err := net.ParseCIDR(value)
+		if err != nil {
+			return nil, fmt.Errorf("invalid IP range %q; enter IPv4 CIDR such as 192.168.1.0/24", value)
+		}
+		ones, bits := network.Mask.Size()
+		if bits != 32 || ones < 20 {
+			return nil, fmt.Errorf("IP range %q is unsupported; use an IPv4 CIDR from /20 through /32", value)
+		}
+		canonical := network.String()
+		if !seen[canonical] {
+			validated = append(validated, canonical)
+			seen[canonical] = true
+		}
+	}
+	if len(validated) == 0 {
+		return nil, fmt.Errorf("enter at least one IPv4 CIDR range")
+	}
+	return validated, nil
+}
+
+func networksForRanges(ranges []string) []*net.IPNet {
+	useLocalDefaults := ranges == nil
+	if ranges == nil {
+		ranges = appConfig.Discovery.CIDRRanges
+	}
 	var networks []*net.IPNet
-	for _, raw := range appConfig.Discovery.CIDRRanges {
+	for _, raw := range ranges {
 		ip, network, err := net.ParseCIDR(strings.TrimSpace(raw))
 		if err == nil && ip.To4() != nil {
 			networks = append(networks, network)
 		}
 	}
-	if len(networks) == 0 {
+	if len(networks) == 0 && useLocalDefaults {
 		for _, ip := range localIPv4s() {
 			_, network, _ := net.ParseCIDR(ip.String() + "/24")
 			networks = append(networks, network)
@@ -331,12 +383,27 @@ func configuredNetworks() []*net.IPNet {
 	return networks
 }
 
+func configuredNetworks() []*net.IPNet { return networksForRanges(nil) }
+
+func configuredRangeStrings() []string {
+	networks := configuredNetworks()
+	ranges := make([]string, 0, len(networks))
+	for _, network := range networks {
+		ranges = append(ranges, network.String())
+	}
+	return ranges
+}
+
 func hostsForNetworks() []string { return discoveryHosts(blockedDiscoveryHosts()) }
 
 func discoveryHosts(blocked map[string]bool) []string {
+	return discoveryHostsInNetworks(blocked, configuredNetworks())
+}
+
+func discoveryHostsInNetworks(blocked map[string]bool, networks []*net.IPNet) []string {
 	seen := map[string]bool{}
 	var hosts []string
-	for _, network := range configuredNetworks() {
+	for _, network := range networks {
 		ones, bits := network.Mask.Size()
 		if bits != 32 || ones < 20 {
 			continue
@@ -359,6 +426,10 @@ func discoveryHosts(blocked map[string]bool) []string {
 }
 
 func performDiscovery(manual bool) {
+	performDiscoveryWithRanges(manual, nil)
+}
+
+func performDiscoveryWithRanges(manual bool, ranges []string) {
 	result := DiscoveryResult{StartedAt: time.Now()}
 	if !manual {
 		result.LeaderIP = discoveryLeaderIP()
@@ -375,7 +446,11 @@ func performDiscovery(manual bool) {
 	if !manual {
 		blocked = blockedDiscoveryHosts()
 	}
-	for _, host := range discoveryHosts(blocked) {
+	networks := configuredNetworks()
+	if ranges != nil {
+		networks = networksForRanges(ranges)
+	}
+	for _, host := range discoveryHostsInNetworks(blocked, networks) {
 		targets[fmt.Sprintf("http://%s:%d", host, appConfig.TimerPort)] = true
 	}
 	if manual {
