@@ -862,6 +862,9 @@ func (s *BillingStore) updateAtStop(id, action string, minutes, amount int, stop
 				Timestamp: now, Amount: amount, Status: x.PaymentStatus,
 			})
 		case "close":
+			if x.Status == "closed" {
+				return x, nil
+			}
 			if x.Status != "open" {
 				return Session{}, apiError(http.StatusConflict, errors.New("session is already closed"))
 			}
@@ -1786,6 +1789,9 @@ func callBillingPeerContext(ctx context.Context, pc PC, method, path string, pay
 	if payload != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
+	if method == http.MethodGet && strings.HasSuffix(path, "/status") {
+		request.Header.Set("Cache-Control", "no-cache")
+	}
 	response, err := monitoredHTTPDo(request, operation, pc.ID)
 	if err != nil {
 		logBillingPeerFailure(operation, pc, method, endpoint, request.Header.Get(httpcheck.RequestIDHeader), 0, "", err)
@@ -1819,6 +1825,9 @@ func callBillingPeerContext(ctx context.Context, pc PC, method, path string, pay
 
 func billingPeerOperation(method, path string) string {
 	switch {
+	case method == http.MethodGet && strings.HasPrefix(path, "/internal/api/local/sessions/") &&
+		strings.HasSuffix(path, "/status"):
+		return "session-status"
 	case method == http.MethodPost && path == "/internal/api/local/sessions":
 		return "session-start"
 	case method == http.MethodPost && strings.HasSuffix(path, "/close") &&
@@ -1932,6 +1941,9 @@ func updateSessionForDashboardContext(ctx context.Context, id, action string, mi
 	if err != nil {
 		return Session{}, err
 	}
+	if action == "close" && session.Status == "closed" {
+		return session, nil
+	}
 	pc, ok := routeForSession(session)
 	if !ok {
 		return Session{}, errors.New("the session's exact system endpoint is not registered; refusing to update another record")
@@ -1962,6 +1974,36 @@ func updateSessionForDashboardContext(ctx context.Context, id, action string, mi
 	return updated, nil
 }
 
+func sessionStatusForDashboardContext(ctx context.Context, id string) (Session, error) {
+	session, err := billingStore.sessionByID(id)
+	if err != nil {
+		return Session{}, err
+	}
+	pc, ok := routeForSession(session)
+	if !ok {
+		return Session{}, errors.New("the session's exact system endpoint is not registered; refusing to read another record")
+	}
+	var current Session
+	if localBillingPC(pc) {
+		current, err = billingStore.sessionByID(id)
+	} else {
+		path := "/internal/api/local/sessions/" + url.PathEscape(id) + "/status"
+		err = callBillingPeerContext(ctx, pc, http.MethodGet, path, nil, &current)
+	}
+	if err != nil {
+		return Session{}, err
+	}
+	if current.ID != id || !sessionAtPC(current, pc) {
+		return Session{}, apiError(http.StatusConflict, errors.New("session status response does not match the requested system"))
+	}
+	if !localBillingPC(pc) {
+		if err := billingStore.mergeSyncedSessions(current.DeviceID, []Session{current}); err != nil {
+			return Session{}, fmt.Errorf("the owning PC returned the session status, but this dashboard could not save the synchronized record: %w", err)
+		}
+	}
+	return current, nil
+}
+
 // closeOwnedSession stops the owning timer before committing its closed record.
 // If the workbook write fails, restore the timer snapshot so the open session remains usable.
 func closeOwnedSession(id string, session Session, pc PC) (Session, error) {
@@ -1974,11 +2016,14 @@ func closeOwnedSessionAt(id string, session Session, pc PC, stopped time.Time) (
 	if err != nil {
 		return Session{}, err
 	}
-	if current.Status != "open" {
-		return Session{}, apiError(http.StatusConflict, errors.New("session is already closed"))
-	}
 	if current.DeviceID != session.DeviceID || !sessionAtPC(current, pc) {
 		return Session{}, apiError(http.StatusConflict, errors.New("session ID and owning PC do not match"))
+	}
+	if current.Status == "closed" {
+		return current, nil
+	}
+	if current.Status != "open" {
+		return Session{}, apiError(http.StatusConflict, fmt.Errorf("session cannot be closed with status %q", current.Status))
 	}
 	pc.Address = billingControlAddress(pc)
 	previous, err := getTimerStatus(pc.Address)
@@ -2069,6 +2114,21 @@ func localSessionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/internal/api/local/sessions/"), "/"), "/")
+	if len(parts) == 2 && parts[1] == "status" && r.Method == http.MethodGet {
+		w.Header().Set("Cache-Control", "no-store")
+		session, err := billingStore.sessionByID(parts[0])
+		if err != nil {
+			writeBillingError(w, err)
+			return
+		}
+		pc, ok := routeForSession(session)
+		if !ok || !localBillingPC(pc) || !sessionAtPC(session, pc) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "session endpoint is not owned by this billing device"})
+			return
+		}
+		writeJSON(w, http.StatusOK, session)
+		return
+	}
 	if len(parts) != 2 || r.Method != http.MethodPost {
 		http.NotFound(w, r)
 		return
@@ -2237,6 +2297,18 @@ func sessionActionHandler(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/sessions/"), "/"), "/")
 	if len(parts) == 1 && parts[0] == "extend" {
 		extendSessionHandler(w, r)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "status" && r.Method == http.MethodGet {
+		w.Header().Set("Cache-Control", "no-store")
+		session, err := sessionStatusForDashboardContext(r.Context(), parts[0])
+		if err != nil {
+			writeBillingError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{
+			"id": session.ID, "status": session.Status, "updated_at": session.UpdatedAt,
+		})
 		return
 	}
 	if len(parts) != 2 || r.Method != http.MethodPost {

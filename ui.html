@@ -2586,6 +2586,7 @@
 
       function requestFeature(path) {
         const pathname = String(path).split("?")[0];
+        if (pathname.startsWith("/api/sessions/") && pathname.endsWith("/status")) return "billing-session-status";
         if (/\/status$/.test(pathname)) return "timer-status";
         if (pathname.endsWith("/api/sessions/extend")) return "session-extension";
         if (pathname.endsWith("/api/sessions")) return "billing-sessions";
@@ -3455,6 +3456,21 @@
       function postCardSession(path,body) {
         return request(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
       }
+      async function closeCardSessionAndConfirmStatus(sessionID) {
+        try {
+          return await postCardSession("/api/sessions/"+encodeURIComponent(sessionID)+"/close",{});
+        } catch (closeError) {
+          let session;
+          try {
+            session=await request("/api/sessions/"+encodeURIComponent(sessionID)+"/status");
+          } catch (statusError) {
+            throw new Error("Close request failed: "+closeError.message+". Could not confirm the session status: "+statusError.message+". No new session was started.");
+          }
+          if (session?.id!==sessionID) throw new Error("Close request failed: "+closeError.message+". The status check returned a different session; no new session was started.");
+          if (session.status==="closed") return session;
+          throw new Error("Close request failed: "+closeError.message+". The session is still "+(session.status||"in an unknown state")+"; no new session was started.");
+        }
+      }
       async function startPCBillingSession(id){
         if(pendingSessionStarts.has(id))return;
         const p=pcs.find(p=>p.id===id), message=$("sf-message-"+id);
@@ -3466,7 +3482,7 @@
           setCardBusy(id,true);
           if (previous) {
             if (!confirm("Close the current bill and start a new session? Choose Cancel and use Save to update the current bill.")) return;
-            await postCardSession("/api/sessions/"+encodeURIComponent(previous.id)+"/close",{});
+            await closeCardSessionAndConfirmStatus(previous.id);
             applyCardSession(p,null);
           }
           const result=await postCardSession("/api/sessions",{pc_id:id,...customer,
@@ -3498,7 +3514,7 @@
             state.repeatAdjustment=timer.timer_mode==="tweak" || (!timer.timer_mode && /^[+-]/.test(state.timerDraft.value.trim()));
           }
           if (close) {
-            await postCardSession(url+"/close",{});
+            await closeCardSessionAndConfirmStatus(session.id);
             applyCardSession(p,null);
             $("cv-"+id).value="0";$("cf-"+id).value="60";
           }

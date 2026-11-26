@@ -330,8 +330,34 @@ func TestManualPriceOverridePersistsAndCloseStopsTimerIdempotently(t *testing.T)
 	mu.Unlock()
 	duplicate := httptest.NewRecorder()
 	mux.ServeHTTP(duplicate, httptest.NewRequest(http.MethodPost, "/api/sessions/"+session.ID+"/close", strings.NewReader(`{}`)))
-	if duplicate.Code != http.StatusConflict {
-		t.Fatalf("duplicate close returned %d; want 409", duplicate.Code)
+	if duplicate.Code != http.StatusOK {
+		t.Fatalf("duplicate close returned %d; want 200: %s", duplicate.Code, duplicate.Body.String())
+	}
+	var duplicateSession Session
+	if err := json.Unmarshal(duplicate.Body.Bytes(), &duplicateSession); err != nil {
+		t.Fatal(err)
+	}
+	if duplicateSession.Status != "closed" || duplicateSession.ID != session.ID {
+		t.Fatalf("duplicate close did not return the existing closed session: %+v", duplicateSession)
+	}
+	status := httptest.NewRecorder()
+	mux.ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/api/sessions/"+session.ID+"/status", nil))
+	if status.Code != http.StatusOK {
+		t.Fatalf("session status returned %d: %s", status.Code, status.Body.String())
+	}
+	var statusResponse struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(status.Body.Bytes(), &statusResponse); err != nil {
+		t.Fatal(err)
+	}
+	if statusResponse.ID != session.ID || statusResponse.Status != "closed" {
+		t.Fatalf("status endpoint returned %+v; want the closed session", statusResponse)
+	}
+	storedDuplicate, err := billingStore.update(session.ID, "close", 0, 0)
+	if err != nil || storedDuplicate.Status != "closed" {
+		t.Fatalf("duplicate store close returned %+v, %v; want the existing closed session", storedDuplicate, err)
 	}
 	mu.Lock()
 	defer mu.Unlock()

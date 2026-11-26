@@ -544,7 +544,7 @@ func TestDailyReportUsesAsiaKolkataSessionStartDateAndFlagsIncompleteSync(t *tes
 
 func TestDashboardRoutesRemoteBillingToTheOwningDevice(t *testing.T) {
 	configureBillingTest(t)
-	var startCount, extendCount, closeCount atomic.Int32
+	var startCount, extendCount, closeCount, statusCount atomic.Int32
 	const sessionID = "S-remote-owner"
 	const deviceID = "PC-remote-owner"
 	var pc PC
@@ -615,6 +615,15 @@ func TestDashboardRoutesRemoteBillingToTheOwningDevice(t *testing.T) {
 				CreatedAt: "2026-02-01T10:00:00+05:30", UpdatedAt: "2026-02-01T10:20:00+05:30",
 				PurchasedMinutes: 45, FinalAmount: 45, AmountPaid: 45,
 			})
+		case r.Method == http.MethodGet && r.URL.Path == "/internal/api/local/sessions/"+sessionID+"/status":
+			statusCount.Add(1)
+			writeJSON(w, http.StatusOK, Session{
+				ID: sessionID, DeviceID: deviceID, PCID: pc.ID, PCName: pc.Name,
+				PCAddress: pc.Address, CustomerName: "Remote Customer",
+				Status: "closed", StartedAt: "2026-02-01T10:00:00+05:30",
+				CreatedAt: "2026-02-01T10:00:00+05:30", UpdatedAt: "2026-02-01T10:20:00+05:30",
+				PurchasedMinutes: 45, FinalAmount: 45, AmountPaid: 45,
+			})
 		default:
 			http.NotFound(w, r)
 		}
@@ -662,6 +671,20 @@ func TestDashboardRoutesRemoteBillingToTheOwningDevice(t *testing.T) {
 	}
 	if closed.Status != "closed" || closeCount.Load() != 1 {
 		t.Fatalf("remote close was not routed to the owning PC: %+v", closed)
+	}
+	duplicateClose, err := updateSessionForDashboardContext(ctx, sessionID, "close", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if duplicateClose.Status != "closed" || closeCount.Load() != 1 {
+		t.Fatalf("duplicate remote close was not idempotent: session=%+v close calls=%d", duplicateClose, closeCount.Load())
+	}
+	status, err := sessionStatusForDashboardContext(ctx, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.ID != sessionID || status.Status != "closed" || statusCount.Load() != 1 {
+		t.Fatalf("remote session status was not checked at its owner: session=%+v status calls=%d", status, statusCount.Load())
 	}
 	sessions, err := billingStore.sessions("", "")
 	if err != nil {
@@ -892,8 +915,8 @@ func TestDashboardRoutesFullBillingLifecycleToFourOwningDevices(t *testing.T) {
 		}
 		duplicate := httptest.NewRecorder()
 		mux.ServeHTTP(duplicate, httptest.NewRequest(http.MethodPost, "/api/sessions/"+session.ID+"/close", bytes.NewReader([]byte(`{}`))))
-		if duplicate.Code != http.StatusBadGateway {
-			t.Fatalf("PC %d duplicate close returned %d; want upstream conflict surfaced as 502", index+1, duplicate.Code)
+		if duplicate.Code != http.StatusOK {
+			t.Fatalf("PC %d duplicate close returned %d; want 200: %s", index+1, duplicate.Code, duplicate.Body.String())
 		}
 	}
 	stored, err := billingStore.sessions("", "")
