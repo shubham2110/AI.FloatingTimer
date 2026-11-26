@@ -579,11 +579,13 @@ after the timer has been changed, the server attempts to restore the timer's pri
 remaining time, running state, and overlay visibility; a failed restoration is
 reported explicitly.
 
-Each owner writes one daily CSV under `billing/`. The session start date determines the file. The billing owner uses the configured friendly name or the host name. Discovery records the host's configured name (or Windows computer name) as `owner` on every timer. Billing identifies a timer by that owner and its path (empty for the host, e.g. `/1` for a virtual timer). The dashboard uses the registered address to reach the peer. An updated peer resolves the owner/path against its own timer manifest and applies local commands via loopback. Use distinct configured names on different hosts. After upgrading peers, run Discover to refresh legacy registry entries.
+New session records are stored in `billing/<PC name>/YYYY-MM-DD.csv`, with the session start date determining the file. PC names are made safe for Windows folder names; records without a PC name use `Unassigned`. Existing root-level `billing/YYYY-MM-DD.csv` files remain readable and are not moved automatically. The report includes records without a PC name under `Unassigned` and counts them in `unassigned_sessions`; records from offline or unregistered PCs are still included.
+
+The billing owner uses the configured friendly name or the host name. Discovery records the host's configured name (or Windows computer name) as `owner` on every timer. Billing identifies a timer by that owner and its path (empty for the host, e.g. `/1` for a virtual timer). The dashboard uses the registered address to reach the peer. An updated peer resolves the owner/path against its own timer manifest and applies local commands via loopback. Use distinct configured names on different hosts. After upgrading peers, run Discover to refresh legacy registry entries.
 
 | Method and path | Description |
 | --- | --- |
-| `GET /api/billing/download?date=YYYY-MM-DD` | Download one daily CSV. The default is today in Asia/Kolkata. |
+| `GET /api/billing/download?date=YYYY-MM-DD` | Download one combined daily CSV from legacy and PC-name folders. The default is today in Asia/Kolkata. |
 | `PUT /api/pricing` | Save the catalog returned by GET. Rules have group, category, players, duration_minutes and amount. |
 | `POST /api/pricing/distribute` | Send saved rules to known available peer managers and return per-peer results. |
 | `POST /api/sessions/{id}/correct` | Set amount paid and time spent using integer amount and minutes. |
@@ -591,15 +593,27 @@ Each owner writes one daily CSV under `billing/`. The session start date determi
 The dashboard routes remote session starts and changes to the exact owning PC
 endpoint. A background pull runs every 30 seconds; the dashboard's **Sync PCs**
 button triggers it immediately. Source records remain on their PCs. The hub
-upserts snapshots by `(device_id, session_id)` and acknowledges only the matching
-`updated_at`, so a failed acknowledgement is safe to retry.
+upserts snapshots by `(device_id, session_id)` across all dated CSVs and
+acknowledges only the matching `updated_at`, so a failed acknowledgement is safe
+to retry.
 
 | Method and path | Description |
 | --- | --- |
 | `POST /api/billing/sync` | Pull pending records from the hub's registered PCs. Returns per-device online, pending, error, and last-successful-sync state plus an overall `complete` flag. |
-| `GET /api/billing/report?date=YYYY-MM-DD` | Return synchronized session records, registered system count, session count, distinct named customer count, billed/collected/outstanding amounts, PC-wise totals, and device sync state for the requested date. |
+| `GET /api/billing/report?date=YYYY-MM-DD` | Return synchronized session records, registered system count, session count, distinct named customer count, billed/collected/outstanding amounts, PC-wise totals, unassigned-session count, and device sync state for one date. |
+| `GET /api/billing/report?start=YYYY-MM-DD&end=YYYY-MM-DD` | Return the same consolidated report for an inclusive session-start-date range, including the combined records, totals by PC, and synchronization status. The range is limited to 10 years. |
+| `GET /api/billing/analytics?start=YYYY-MM-DD&end=YYYY-MM-DD&category=...&pc=...&customer=...` | Return this-month and last-month collections, filtered range billed/collected/outstanding totals, daily and weekly collections, average daily collections, category usage and earnings, available filter options, and sync completeness. Dates are inclusive; the range defaults to the current month when omitted. |
+| `POST /api/billing/snacks/no-pc` | Record a standalone paid snack sale without a gaming PC. JSON body: `{"amount": 20}` where amount must be INR 1–9,999,999. The sale is included in billing and snack revenue, but not gaming-session counts. |
 | `GET /internal/api/billing/sync/pending` | Peer API used by the hub to read a device's not-yet-acknowledged session snapshots. |
-| `POST /internal/api/billing/sync/ack` | Peer API used by the hub to acknowledge exact session IDs and update timestamps after its daily CSV write succeeds. |
+| `POST /internal/api/billing/sync/ack` | Peer API used by the hub to acknowledge exact session IDs and update timestamps after its PC-name/date CSV write succeeds. |
+
+The analytics `category`, `pc`, and `customer` query parameters filter the
+category table, daily chart, and range totals. `customer` is a case-insensitive
+substring match. Use `pc=__unassigned__` to select records without a PC ID.
+Category summaries separate gaming sessions from standalone snack sales and
+include minutes, game/snack/billed amounts, collections, and outstanding
+balances. Collections are grouped by payment-event date; billed and outstanding
+amounts are grouped by session start date.
 
 The report groups each session by its start date in `Asia/Kolkata`, including
 sessions that continue past midnight; a session is reported on its start date
@@ -617,6 +631,16 @@ error, or has pending records. The device table reports its last successful
 synchronization timestamp; previously synchronized history remains visible while
 a report is incomplete. Historical records remain in the hub CSV files after a
 PC is removed from the current registry.
+
+Revenue analytics assigns collections to the payment event date in
+`Asia/Kolkata`, and assigns billed totals and outstanding balances to the
+session start date. Older sessions without payment events use `payment_at`,
+falling back to the session start time. A manually corrected payment uses the
+selected payment date. Range averages divide collections by every calendar day
+in the inclusive range, including days with no collections. Weekly totals use
+Monday-to-Sunday ranges, clipped to the selected range. Custom ranges are
+limited to ten years. The analytics response uses the same incomplete-sync
+warning and device status data as the daily report.
 
 The peer APIs are unauthenticated and unencrypted. Use only on a trusted private
 network and do not expose the management ports to the public internet.

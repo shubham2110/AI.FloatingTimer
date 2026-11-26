@@ -167,7 +167,18 @@ func (s *BillingStore) editBill(id string, e billEdit) (Session, error) {
 			if x.PaymentAt == "" {
 				x.PaymentAt = x.UpdatedAt
 			}
-			x.payments = append(x.payments, paymentRecord{ID: "C-" + x.UpdatedAt, Timestamp: x.UpdatedAt, Amount: x.AmountPaid - old.AmountPaid, Status: "correction"})
+			x.payments = append(x.payments, paymentRecord{ID: "C-" + x.UpdatedAt, Timestamp: x.PaymentAt, Amount: x.AmountPaid - old.AmountPaid, Status: "correction"})
+		} else if old.PaymentAt != x.PaymentAt && len(x.payments) > 0 {
+			timestamp := x.PaymentAt
+			if timestamp == "" {
+				timestamp = x.StartedAt
+			}
+			for i := len(x.payments) - 1; i >= 0; i-- {
+				if x.payments[i].Amount != 0 {
+					x.payments[i].Timestamp = timestamp
+					break
+				}
+			}
 		}
 		if err := s.saveBillEdit(ledger, i, x); err != nil {
 			return Session{}, err

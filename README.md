@@ -407,6 +407,9 @@ system's `address` as the base URL, including its numeric on-behalf path when pr
 Status uses one root `/status` request per host and updates all its active systems.
 Requests go directly to the timer host. The former `/api/pcs/{id}/{action}` proxy
 routes have been removed. Local timer command activity is logged on the timer host.
+The dashboard defaults to **TryOutColorful** and also includes **TryOut** in its theme picker.
+It uses a refined navy, teal, slate, and warm-brass palette across the portal, with
+coordinated dashboard cards and controls. The selected theme is saved in the browser.
 
 ```javascript
 const pcs = await (await fetch('/api/pcs')).json();
@@ -835,13 +838,13 @@ Discovery still probes the configured timer port; differently configured remote 
 ports need manual registration or an existing peer record. A discovery observation
 older than 15 minutes is marked stale, without deleting the record.
 
-### Local-first billing and consolidated daily reports
+### Local-first billing and consolidated reports
 
-Each host records sessions in **billing/YYYY-MM-DD.csv** beside the executable. The date is the session start date in Asia/Kolkata, including sessions that cross midnight. Each write replaces only the affected day file. The configured friendly name identifies the billing owner, with the Windows computer name as the fallback. Give each physical PC a distinct name. Virtual timers retain their separate URL paths.
+New session records are stored beside the executable in **billing/PC name/YYYY-MM-DD.csv**. The date is the session start date in Asia/Kolkata, including sessions that cross midnight. Each PC-name folder contains one CSV per date; synced copies use the same PC-name folder structure. Existing root-level **billing/YYYY-MM-DD.csv** files remain readable and are not moved automatically. Records without a PC name are stored under **Unassigned** and called out in the report, but still count toward totals; offline or unregistered PCs are not excluded.
 
 Set `pricing_group` in `overlay_timer_config.json` to the group for this machine. An on-behalf timer can override the host group with its own `on_behalf_of[].pricing_group`. Existing installations default to `PC Pro`. In Settings, edit prices by group, category, customer count and minutes. The shortest duration sets the base rate. The longest qualifying duration sets the discounted rate for the whole session, rounded up to whole INR. Save locally or distribute the saved prices to reachable managers. The dashboard prompts for a category only when the selected group has multiple categories.
 
-Start a billed session with the timer duration, customer name and number of customers. The dashboard shows today's billed amount and corrections for time spent or amount collected. Billing report contains daily totals and history. A reporting manager pulls from its registered peers every 30 seconds. An offline owner keeps its local records.
+Start a billed session with the timer duration, customer name and number of customers. The dashboard shows today's revenue and corrections for time spent or amount collected. The Billing menu separates **Billing Reports** from **Admin Billing**. Billing Reports contains revenue analytics and a consolidated report for a selected day, Monday-to-Sunday week, calendar month, calendar year, or custom date range. Admin Billing contains the matching period's billing entries, editable session history, and PC synchronization. The collection chart can group bars by day, week, or month; it also shows an average line and this-month and last-month totals. Category summaries include game and snack revenue, session minutes, and standalone No PC snack sales (stored in the `No PC` billing folder). Collections are grouped by payment date in Asia/Kolkata; consolidated billed totals and outstanding are grouped by session start date. A reporting manager pulls from its registered peers every 30 seconds. An offline owner keeps its local records.
 
 These peer APIs have no authentication or encryption, like the rest of the
 application. Keep all PCs and the reporting hub on a trusted private network;

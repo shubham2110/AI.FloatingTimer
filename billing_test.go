@@ -463,7 +463,11 @@ func TestSessionStartTimerFailureRestoresTimerAndDoesNotWriteSession(t *testing.
 
 func TestSessionStartWorkbookFailureRestoresSelectedTimer(t *testing.T) {
 	configureBillingTest(t)
-	if err := os.Mkdir(filepath.Join(billingStore.path, time.Now().In(billingTimezone).Format(time.DateOnly)+".csv"), 0700); err != nil {
+	csvPath := billingPCDayPath(billingStore.path, "Console 1", time.Now().In(billingTimezone).Format(time.DateOnly))
+	if err := os.MkdirAll(filepath.Dir(csvPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(csvPath, 0700); err != nil {
 		t.Fatal(err)
 	}
 	server, mu, requests, state := newBillingTimerServer(t, false)
@@ -710,7 +714,7 @@ func TestSessionExtensionWorkbookFailureRollsBackTimer(t *testing.T) {
 		t.Fatal(err)
 	}
 	day, _ := billingDay(session)
-	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(filepath.Join(billingStore.path, day+".csv")), windows.GENERIC_READ, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, 0, 0)
+	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(billingPCDayPath(billingStore.path, session.PCName, day)), windows.GENERIC_READ, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

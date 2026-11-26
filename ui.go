@@ -55,6 +55,13 @@ func startManagementService(listener net.Listener) {
 		go watchStoppedSessions()
 	}
 	mux := http.NewServeMux()
+	proxy := newProxyService(appDataPath("proxy-auth.json"))
+	for _, path := range []string{"/api/proxy/login", "/api/proxy/logout", "/api/proxy/password"} {
+		mux.HandleFunc(path, proxy.auth)
+	}
+	mux.HandleFunc("/api/proxy/network", proxy.networkProbe)
+	mux.HandleFunc("/api/proxy/local-probe", proxy.networkProbe)
+	mux.HandleFunc("/api/proxy/relay/", proxy.relay)
 	mux.HandleFunc("/api/health", healthHandler)
 	mux.HandleFunc("/", servePage)
 	mux.HandleFunc("/api/pcs", pcsHandler)
@@ -65,7 +72,7 @@ func startManagementService(listener net.Listener) {
 	mux.HandleFunc("/api/themes", themesHandler)
 	registerBillingHandlers(mux)
 	server := &http.Server{
-		Addr: fmt.Sprintf(":%d", appConfig.UIDiscoveryPort), Handler: requestLogMiddleware(cors(headers(mux))),
+		Addr: fmt.Sprintf(":%d", appConfig.UIDiscoveryPort), Handler: requestLogMiddleware(proxy.protect(cors(headers(mux)))),
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 20 * time.Second,
 		WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,
 	}

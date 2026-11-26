@@ -93,7 +93,7 @@ func (s *BillingStore) pendingSync() (BillingSyncExport, error) {
 			pending = append(pending, session)
 		}
 	}
-	return BillingSyncExport{DeviceID: s.deviceID, Name: configuredFriendlyName(), Sessions: pending}, nil
+	return BillingSyncExport{Instance: billingNodeInstance, DeviceID: s.deviceID, Name: configuredFriendlyName(), Sessions: pending}, nil
 }
 
 func (s *BillingStore) acknowledgeSync(ack BillingSyncAck) (int, error) {
@@ -274,25 +274,49 @@ func (s *BillingStore) sessionByID(id string) (Session, error) {
 }
 
 func (s *BillingStore) report(date string) (BillingReport, error) {
+	parsedDate, err := time.ParseInLocation(time.DateOnly, date, billingTimezone)
+	if err != nil || parsedDate.Format(time.DateOnly) != date {
+		return BillingReport{}, errors.New("date must use YYYY-MM-DD")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.require(); err != nil {
 		return BillingReport{}, err
 	}
-	parsedDate, err := time.ParseInLocation("2006-01-02", date, billingTimezone)
-	if err != nil || parsedDate.Format("2006-01-02") != date {
-		return BillingReport{}, errors.New("date must use YYYY-MM-DD")
-	}
-	f := &dailyLedger{}
-	err = f.readDay(filepath.Join(s.path, date+".csv"), date)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	file, err := s.readDayLocked(date)
+	if err != nil {
 		return BillingReport{}, err
 	}
+	devices := append([]BillingDeviceStatus(nil), s.syncStatuses...)
+	return billingReportFromSessions(date, date, file.sessions, devices), nil
+}
 
-	sessions := f.sessions
+func (s *BillingStore) reportRange(startDate, endDate string) (BillingReport, error) {
+	start, err := time.ParseInLocation(time.DateOnly, startDate, billingTimezone)
+	if err != nil || start.Format(time.DateOnly) != startDate {
+		return BillingReport{}, errors.New("start date must use YYYY-MM-DD")
+	}
+	end, err := time.ParseInLocation(time.DateOnly, endDate, billingTimezone)
+	if err != nil || end.Format(time.DateOnly) != endDate {
+		return BillingReport{}, errors.New("end date must use YYYY-MM-DD")
+	}
+	if end.Before(start) {
+		return BillingReport{}, errors.New("end date must be on or after start date")
+	}
+	if end.Sub(start) > 3660*24*time.Hour {
+		return BillingReport{}, errors.New("date range cannot exceed 10 years")
+	}
+	sessions, err := s.sessions("", "")
+	if err != nil {
+		return BillingReport{}, err
+	}
+	return billingReportFromSessions(startDate, endDate, sessions, s.billingSyncStatuses()), nil
+}
+
+func billingReportFromSessions(startDate, endDate string, sessions []Session, devices []BillingDeviceStatus) BillingReport {
 	report := BillingReport{
-		Date: date, Timezone: billingTimezoneName,
-		Devices: append([]BillingDeviceStatus(nil), s.syncStatuses...),
+		Date: startDate, StartDate: startDate, EndDate: endDate,
+		Timezone: billingTimezoneName, Devices: devices,
 	}
 	report.SystemCount = len(report.Devices)
 	report.Complete = len(report.Devices) > 0
@@ -308,17 +332,34 @@ func (s *BillingStore) report(date string) (BillingReport, error) {
 			continue
 		}
 		started, parseErr := sessionTimestamp(session.StartedAt)
-		if parseErr != nil || started.In(billingTimezone).Format("2006-01-02") != date {
+		sessionDate := ""
+		if parseErr == nil {
+			sessionDate = started.In(billingTimezone).Format(time.DateOnly)
+		}
+		if parseErr != nil || sessionDate < startDate || sessionDate > endDate {
 			continue
 		}
 		report.Records = append(report.Records, session)
-		report.SessionCount++
-		report.CustomerCount++
+		standaloneSnack := isStandaloneSnackSale(session)
+		if !standaloneSnack {
+			report.SessionCount++
+			report.CustomerCount++
+		}
+		pcName := strings.TrimSpace(session.PCName)
+		if pcName == "" {
+			report.UnassignedSessions++
+			pcName = "Unassigned"
+		}
 		customer := strings.ToLower(strings.TrimSpace(session.CustomerName))
 		if customer != "" {
 			customers[customer] = struct{}{}
 		}
 		report.BilledAmount += session.FinalAmount
+		gameAmount := session.FinalAmount - session.Snacks
+		if gameAmount > 0 {
+			report.GameAmount += gameAmount
+		}
+		report.SnackAmount += session.Snacks
 		report.CollectedAmount += session.AmountPaid
 		report.Revenue += session.AmountPaid
 		due := session.FinalAmount - session.AmountPaid
@@ -331,12 +372,18 @@ func (s *BillingStore) report(date string) (BillingReport, error) {
 			index = len(report.PCs)
 			pcIndex[key] = index
 			report.PCs = append(report.PCs, BillingReportPC{
-				DeviceID: session.DeviceID, PCID: session.PCID, PCName: session.PCName,
+				DeviceID: session.DeviceID, PCID: session.PCID, PCName: pcName,
 			})
 		}
-		report.PCs[index].SessionCount++
-		report.PCs[index].CustomerCount++
+		if !standaloneSnack {
+			report.PCs[index].SessionCount++
+			report.PCs[index].CustomerCount++
+		}
 		report.PCs[index].BilledAmount += session.FinalAmount
+		if gameAmount > 0 {
+			report.PCs[index].GameAmount += gameAmount
+		}
+		report.PCs[index].SnackAmount += session.Snacks
 		report.PCs[index].CollectedAmount += session.AmountPaid
 		report.PCs[index].Revenue += session.AmountPaid
 		if due > 0 {
@@ -344,5 +391,5 @@ func (s *BillingStore) report(date string) (BillingReport, error) {
 		}
 	}
 	report.UniqueCustomerCount = len(customers)
-	return report, nil
+	return report
 }

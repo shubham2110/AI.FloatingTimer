@@ -1,0 +1,14 @@
+Now can you add quick help in customer name ? like remember the past names and suggest names when someone is trying to enter ?
+
+SHow Today's Revenue instead of Today's bill on top and show the paid amount instead of Billed amount. 
+
+Session history should also be editable and history should be fetchable for any PC, for any date
+Make tryout the defaut theme for now
+
+Discovery should ask for IP range before going to start a discovery 
+
+along with mark selected paid , when we select entries in Today's bill. add remove also.. that will remove all selected entries.
+
+
+
+OnBehalf timer adding via Portal is still nto working, need to check what's going on there. I also need a better UI for saving and all. also I hope after I save it, it shows up as separate system to further configure in Systems. 

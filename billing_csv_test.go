@@ -21,12 +21,12 @@ func TestDailyCSVPartitionsAndPostPaymentCorrection(t *testing.T) {
 	day := time.Date(2026, 10, 31, 23, 59, 0, 0, billingTimezone)
 	rates := []PriceEntry{{Category: "Console", Players: 1, DurationMinutes: 15, Amount: 30}, {Category: "Console", Players: 1, DurationMinutes: 60, Amount: 90}}
 	for i, id := range []string{"a", "b"} {
-		session := Session{ID: id, PCID: id, Status: "open", Category: "Console", Players: 1, CustomerName: "Guest, One", PurchasedMinutes: 15, PricingSnapshot: pricingSnapshot(rates[0], rates)}
+		session := Session{ID: id, PCID: id, PCName: "Console " + id, Status: "open", Category: "Console", Players: 1, CustomerName: "Guest, One", PurchasedMinutes: 15, PricingSnapshot: pricingSnapshot(rates[0], rates)}
 		if _, err := store.commitStart(session, day.Add(time.Duration(i)*time.Minute)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	files, err := filepath.Glob(filepath.Join(root, "*.csv"))
+	files, err := filepath.Glob(filepath.Join(root, "*", "*.csv"))
 	if err != nil || len(files) != 2 {
 		t.Fatalf("daily files %v %v", files, err)
 	}

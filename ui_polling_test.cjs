@@ -106,6 +106,7 @@ function harness(initial, settings = { pollIntervalSeconds: 1, falsePolling: fal
     matchMedia: matchMediaMock,
     alert: msg => { state.lastAlert = String(msg); },
     document: {
+      documentElement:{dataset:{}},
       getElementById: node, createElement: tag => node(tag+serial++),
       querySelectorAll: selector => selector === '.mobile-toggle' ? state.toggles
         : selector === '.timer-extension' ? state.extensions
@@ -910,4 +911,14 @@ test('customer name suggestions are loaded from saved session names',async()=>{
  assert.match(h.node("customerNameSuggestions").innerHTML,/Alice &amp; Bob/);
  assert.match(h.node("customerNameSuggestions").innerHTML,/Casey/);
  assert.match(h.node("sf-customer-pc").innerHTML||h.node("dashboardGrid").innerHTML,/list="customerNameSuggestions"/);
+});
+
+test('proxy mode sends host polls and on-behalf commands to same-origin registered-PC routes', async()=>{
+ const h=harness([sample("pc")]);h.start();await h.advance(0);
+ h.run('proxyEnabled=true');
+ await h.run('timerRequest(pcs[0],"host","status",{})');
+ await h.run('pcRequest("pc","pause",{method:"POST"})');
+ const calls=h.calls.filter(c=>c.url.startsWith("/api/proxy/relay/"));
+ assert.deepEqual(calls.map(c=>c.url),["/api/proxy/relay/pc/host/status","/api/proxy/relay/pc/timer/pause"]);
+ assert.ok(calls.every(c=>c.options.credentials==="same-origin"));
 });

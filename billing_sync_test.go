@@ -914,3 +914,77 @@ func TestDashboardRoutesFullBillingLifecycleToFourOwningDevices(t *testing.T) {
 		}
 	}
 }
+
+func TestBillingSyncMultipleAddressesAndNameCollision(t *testing.T) {
+	configureBillingTest(t)
+	var offline [2]atomic.Bool
+	var acks [2]atomic.Int32
+	var collision atomic.Bool
+	pcs := []PC{}
+	session := Session{ID: "alias-test", DeviceID: "GamePC", PCName: "GamePC", Status: "closed", StartedAt: "2026-11-20T10:00:00Z", UpdatedAt: "2026-11-20T11:00:00Z"}
+	for i := range 2 {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if offline[i].Load() {
+				http.Error(w, "unreachable", 503)
+				return
+			}
+			marker := "one-process"
+			if i == 1 && collision.Load() {
+				marker = "second-process"
+			}
+			switch r.URL.Path {
+			case "/internal/api/billing/sync/pending":
+				// One peer exercises compatibility with the earlier LAN-probe release.
+				if i == 1 {
+					marker = ""
+				}
+				writeJSON(w, 200, BillingSyncExport{Instance: marker, DeviceID: "GamePC", Sessions: []Session{session}})
+			case "/api/proxy/local-probe":
+				writeJSON(w, 200, map[string]string{"instance": marker})
+			case "/internal/api/billing/sync/ack":
+				acks[i].Add(1)
+				writeJSON(w, 200, BillingSyncAckResult{Acknowledged: 1})
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		t.Cleanup(srv.Close)
+		u, _ := url.Parse(srv.URL)
+		port, _ := strconv.Atoi(u.Port())
+		pcs = append(pcs, PC{ID: fmt.Sprint(i), Name: "GamePC", Address: srv.URL, UIPort: port})
+	}
+	setBillingTestPCs(pcs...)
+	run := func() []BillingDeviceStatus {
+		t.Helper()
+		statuses, err := syncBillingDevices()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return statuses
+	}
+	grouped := run()
+	if len(grouped) != 2 || grouped[1].Error != "" || len(grouped[1].Aliases) != 1 || acks[0].Load()+acks[1].Load() != 1 {
+		t.Fatalf("alias sync %+v", grouped)
+	}
+	preferred := 0
+	if grouped[1].Endpoint == pcs[1].Address {
+		preferred = 1
+	}
+	offline[preferred].Store(true)
+	failedOver := run()
+	if len(failedOver) != 2 || failedOver[1].Endpoint == grouped[1].Endpoint || failedOver[1].Error != "" {
+		t.Fatalf("failover %+v", failedOver)
+	}
+	offline[1-preferred].Store(true)
+	if down := run(); len(down) != 2 || down[1].Online {
+		t.Fatalf("offline %+v", down)
+	}
+	offline[0].Store(false)
+	offline[1].Store(false)
+	collision.Store(true)
+	before := acks[0].Load() + acks[1].Load()
+	conflict := run()
+	if len(conflict) != 3 || conflict[1].Error == "" || conflict[2].Error == "" || acks[0].Load()+acks[1].Load() != before {
+		t.Fatalf("name collision %+v", conflict)
+	}
+}

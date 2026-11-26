@@ -30,6 +30,7 @@ const (
 	billingSyncStateName = "billing-sync-status.json"
 	billingSyncInterval  = 30 * time.Second
 	billingTimezoneName  = "Asia/Kolkata"
+	noPCSnackPCID        = "__no_pc_snack__"
 )
 
 var billingTimezone = time.FixedZone(billingTimezoneName, 5*60*60+30*60)
@@ -70,6 +71,11 @@ type Session struct {
 	ResumeMarker          *paymentRecord `json:"resume_marker,omitempty"`
 	payments              []paymentRecord
 }
+
+func isStandaloneSnackSale(session Session) bool {
+	return strings.EqualFold(session.PCID, noPCSnackPCID) && session.Snacks > 0
+}
+
 type continuedBill struct {
 	Amount       int `json:"amount"`
 	SpentSeconds int `json:"spent_seconds"`
@@ -196,7 +202,11 @@ type BillingSummary struct {
 	OpenSessions        int    `json:"open_sessions"`
 	ConfigurationStatus string `json:"configuration_status"`
 }
+
+var billingNodeInstance = rand.Text()
+
 type BillingSyncExport struct {
+	Instance string    `json:"instance,omitempty"`
 	DeviceID string    `json:"device_id"`
 	Name     string    `json:"name"`
 	Sessions []Session `json:"sessions"`
@@ -213,24 +223,31 @@ type BillingSyncAckResult struct {
 	Acknowledged int `json:"acknowledged"`
 }
 type BillingDeviceStatus struct {
-	DeviceID         string `json:"device_id"`
-	Name             string `json:"name"`
-	Endpoint         string `json:"endpoint"`
-	Online           bool   `json:"online"`
-	PendingRecords   int    `json:"pending_records"`
-	LastAttemptAt    string `json:"last_attempt_at,omitempty"`
-	LastSuccessfulAt string `json:"last_successful_sync_at,omitempty"`
-	Error            string `json:"error,omitempty"`
+	Instance         string   `json:"instance,omitempty"`
+	Aliases          []string `json:"aliases,omitempty"`
+	DeviceID         string   `json:"device_id"`
+	Name             string   `json:"name"`
+	Endpoint         string   `json:"endpoint"`
+	Online           bool     `json:"online"`
+	PendingRecords   int      `json:"pending_records"`
+	LastAttemptAt    string   `json:"last_attempt_at,omitempty"`
+	LastSuccessfulAt string   `json:"last_successful_sync_at,omitempty"`
+	Error            string   `json:"error,omitempty"`
 }
 type BillingReport struct {
 	Date                string                `json:"date"`
+	StartDate           string                `json:"start_date"`
+	EndDate             string                `json:"end_date"`
 	Timezone            string                `json:"timezone"`
 	Complete            bool                  `json:"complete"`
 	SystemCount         int                   `json:"system_count"`
 	SessionCount        int                   `json:"session_count"`
+	UnassignedSessions  int                   `json:"unassigned_sessions"`
 	UniqueCustomerCount int                   `json:"unique_customer_count"`
 	CustomerCount       int                   `json:"customer_count"`
 	BilledAmount        int                   `json:"billed_amount"`
+	GameAmount          int                   `json:"game_amount"`
+	SnackAmount         int                   `json:"snack_amount"`
 	CollectedAmount     int                   `json:"collected_amount"`
 	Revenue             int                   `json:"revenue"`
 	Outstanding         int                   `json:"outstanding"`
@@ -245,6 +262,8 @@ type BillingReportPC struct {
 	SessionCount    int    `json:"session_count"`
 	CustomerCount   int    `json:"customer_count"`
 	BilledAmount    int    `json:"billed_amount"`
+	GameAmount      int    `json:"game_amount"`
+	SnackAmount     int    `json:"snack_amount"`
 	CollectedAmount int    `json:"collected_amount"`
 	Revenue         int    `json:"revenue"`
 	Outstanding     int    `json:"outstanding"`
@@ -1345,32 +1364,37 @@ func billingSyncTime() string {
 	return time.Now().In(billingTimezone).Format(time.RFC3339Nano)
 }
 
-func syncOneBillingDevice(pc PC, endpoint string, knownDevices *sync.Map) BillingDeviceStatus {
-	status := BillingDeviceStatus{
-		Name: pc.Name, Endpoint: endpoint, LastAttemptAt: billingSyncTime(),
-	}
-	var exported BillingSyncExport
-	if err := callBillingPeer(pc, http.MethodGet, "/internal/api/billing/sync/pending", nil, &exported); err != nil {
+type billingPeerSnapshot struct {
+	pc       PC
+	status   BillingDeviceStatus
+	exported BillingSyncExport
+}
+
+func readBillingPeer(pc PC, endpoint string) billingPeerSnapshot {
+	peer := billingPeerSnapshot{pc: pc, status: BillingDeviceStatus{Name: pc.Name, Endpoint: endpoint, LastAttemptAt: billingSyncTime()}}
+	status := &peer.status
+	if err := callBillingPeer(pc, http.MethodGet, "/internal/api/billing/sync/pending", nil, &peer.exported); err != nil {
 		status.DeviceID = "unavailable-" + stablePCID(endpoint)
 		status.Error = err.Error()
-		return status
+		return peer
 	}
 	status.Online = true
-	status.DeviceID = exported.DeviceID
+	status.DeviceID = peer.exported.DeviceID
 	if status.DeviceID == "" {
 		status.DeviceID = "unavailable-" + stablePCID(endpoint)
-		status.Error = "billing device did not provide a stable device ID"
-		return status
+		status.Error = "billing endpoint did not return a PC name"
+		return peer
 	}
-	if exported.Name != "" {
-		status.Name = exported.Name
+	if peer.exported.Name != "" {
+		status.Name = peer.exported.Name
 	}
-	status.PendingRecords = len(exported.Sessions)
-	if owner, exists := knownDevices.LoadOrStore(status.DeviceID, endpoint); exists && owner != endpoint {
-		status.Online = true
-		status.Error = fmt.Sprintf("duplicate billing device ID also reported by %s; records were not merged", owner)
-		return status
-	}
+	status.PendingRecords = len(peer.exported.Sessions)
+	status.Instance = peer.exported.Instance
+	return peer
+}
+
+func mergeBillingPeer(peer billingPeerSnapshot) BillingDeviceStatus {
+	pc, status, exported := peer.pc, peer.status, peer.exported
 	for i := range exported.Sessions {
 		if exported.Sessions[i].DeviceID != status.DeviceID {
 			status.Error = "billing device exported a session with a mismatched device ID"
@@ -1422,45 +1446,164 @@ func syncBillingDevices() ([]BillingDeviceStatus, error) {
 		DeviceID: deviceID, Name: configuredFriendlyName(), Endpoint: localEndpoint,
 		Online: true, LastAttemptAt: now, LastSuccessfulAt: now,
 	}
-	var knownDevices sync.Map
-	knownDevices.Store(deviceID, localEndpoint)
+	localStatus.Instance = billingNodeInstance
 	statuses := []BillingDeviceStatus{localStatus}
-
-	type peer struct {
-		pc       PC
-		endpoint string
-	}
-	peers := make(map[string]peer)
+	peers := map[string]PC{}
 	for _, pc := range store.list() {
 		if pc.Deleted {
 			continue
 		}
-		endpoint, endpointErr := billingPeerEndpoint(pc, "")
-		if endpointErr != nil || localBillingPC(pc) {
+		endpoint, e := billingPeerEndpoint(pc, "")
+		if e != nil || endpoint == localEndpoint || localConfigAddress(pc) {
 			continue
 		}
-		if _, exists := peers[endpoint]; !exists {
-			peers[endpoint] = peer{pc: pc, endpoint: endpoint}
+		peers[endpoint] = pc
+	}
+	results := make(chan billingPeerSnapshot, len(peers))
+	for endpoint, pc := range peers {
+		go func() { results <- readBillingPeer(pc, endpoint) }()
+	}
+	groups := map[string][]billingPeerSnapshot{}
+	failed := map[string]BillingDeviceStatus{}
+	for range peers {
+		peer := <-results
+		if peer.status.Error != "" {
+			failed[peer.status.Endpoint] = peer.status
+			continue
 		}
+		key := strings.ToLower(peer.status.DeviceID)
+		groups[key] = append(groups[key], peer)
 	}
-	results := make(chan BillingDeviceStatus, len(peers))
-	for _, item := range peers {
-		go func(item peer) {
-			results <- syncOneBillingDevice(item.pc, item.endpoint, &knownDevices)
-		}(item)
-	}
-	for range len(peers) {
-		status := <-results
-		if status.LastSuccessfulAt == "" {
-			for _, previous := range previousStatuses {
-				if previous.Endpoint == status.Endpoint && previous.LastSuccessfulAt != "" {
-					status.LastSuccessfulAt = previous.LastSuccessfulAt
-					break
+	for key, group := range groups {
+		isLocal := strings.EqualFold(key, deviceID)
+		var prior BillingDeviceStatus
+		for _, old := range previousStatuses {
+			if strings.EqualFold(old.DeviceID, key) && (old.Error == "" || len(old.Aliases) > 0) {
+				prior = old
+				break
+			}
+		}
+		sort.Slice(group, func(i, j int) bool {
+			a, b := group[i].status.Endpoint, group[j].status.Endpoint
+			if a == b {
+				return false
+			}
+			if a == prior.Endpoint {
+				return true
+			}
+			if b == prior.Endpoint {
+				return false
+			}
+			return a < b
+		})
+		instance := group[0].status.Instance
+		if len(group) > 1 || isLocal || len(prior.Aliases) > 0 {
+			// Older nodes already expose this process marker on their LAN probe.
+			for i := range group {
+				if group[i].status.Instance == "" {
+					var probe struct {
+						Instance string `json:"instance"`
+					}
+					if callBillingPeer(group[i].pc, http.MethodGet, "/api/proxy/local-probe", nil, &probe) == nil {
+						group[i].status.Instance = probe.Instance
+					}
+				}
+			}
+			instance = group[0].status.Instance
+		}
+		conflict := false
+		if len(group) > 1 || isLocal {
+			conflict = instance == "" || isLocal && instance != billingNodeInstance
+			for _, peer := range group {
+				if peer.status.Instance != instance {
+					conflict = true
 				}
 			}
 		}
-		statuses = append(statuses, status)
+		if conflict {
+			for _, peer := range group {
+				st := peer.status
+				st.Error = "same PC name at multiple endpoints; could not verify one running timer, so records were not merged"
+				statuses = append(statuses, st)
+			}
+			continue
+		}
+		var st BillingDeviceStatus
+		if isLocal {
+			st = statuses[0]
+		} else {
+			st = mergeBillingPeer(group[0])
+		}
+		aliases := map[string]bool{}
+		for _, peer := range group {
+			aliases[peer.status.Endpoint] = true
+		}
+		if instance != "" && prior.Instance == instance {
+			for _, addr := range append([]string{prior.Endpoint}, prior.Aliases...) {
+				if missing, ok := failed[addr]; ok && !missing.Online {
+					aliases[addr] = true
+					delete(failed, addr)
+				}
+			}
+		}
+		delete(aliases, st.Endpoint)
+		for addr := range aliases {
+			st.Aliases = append(st.Aliases, addr)
+		}
+		sort.Strings(st.Aliases)
+		if isLocal {
+			statuses[0] = st
+		} else {
+			statuses = append(statuses, st)
+		}
 	}
+	// Keep previously verified aliases together if every registered route is offline.
+	for _, old := range previousStatuses {
+		if old.Instance == "" || len(old.Aliases) == 0 {
+			continue
+		}
+		addresses := append([]string{old.Endpoint}, old.Aliases...)
+		offline := []string{}
+		allOffline := true
+		for _, addr := range addresses {
+			if _, registered := peers[addr]; !registered {
+				continue
+			}
+			miss, ok := failed[addr]
+			if !ok || miss.Online {
+				allOffline = false
+				break
+			}
+			offline = append(offline, addr)
+		}
+		if allOffline && len(offline) > 0 {
+			st := failed[offline[0]]
+			st.Name = old.Name
+			st.DeviceID = old.DeviceID
+			st.Instance = old.Instance
+			st.Aliases = offline[1:]
+			st.LastSuccessfulAt = old.LastSuccessfulAt
+			statuses = append(statuses, st)
+			for _, addr := range offline {
+				delete(failed, addr)
+			}
+		}
+	}
+	for _, st := range failed {
+		statuses = append(statuses, st)
+	}
+	for i := range statuses {
+		if statuses[i].LastSuccessfulAt != "" {
+			continue
+		}
+		for _, old := range previousStatuses {
+			if old.Endpoint == statuses[i].Endpoint {
+				statuses[i].LastSuccessfulAt = old.LastSuccessfulAt
+				break
+			}
+		}
+	}
+	sort.Slice(statuses[1:], func(i, j int) bool { return statuses[i+1].Endpoint < statuses[j+1].Endpoint })
 	if err := billingStore.replaceSyncStatuses(statuses); err != nil {
 		return billingStore.billingSyncStatuses(), err
 	}
@@ -1506,6 +1649,20 @@ func billingReportHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "GET required"})
 		return
 	}
+	start, end := r.URL.Query().Get("start"), r.URL.Query().Get("end")
+	if start != "" || end != "" {
+		if start == "" || end == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "start and end dates must be provided together"})
+			return
+		}
+		report, err := billingStore.reportRange(start, end)
+		if err != nil {
+			writeBillingError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, report)
+		return
+	}
 	date := r.URL.Query().Get("date")
 	if date == "" {
 		date = time.Now().In(billingTimezone).Format("2006-01-02")
@@ -1516,6 +1673,45 @@ func billingReportHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, report)
+}
+
+func noPCSnackSaleHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST required"})
+		return
+	}
+	var request struct {
+		Amount int `json:"amount"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid snack sale"})
+		return
+	}
+	if request.Amount < 1 || request.Amount > 9999999 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "snack amount must be between 1 and 9999999 INR"})
+		return
+	}
+	id, err := newSessionID()
+	if err != nil {
+		writeBillingError(w, err)
+		return
+	}
+	now := time.Now().In(billingTimezone)
+	timestamp := now.Format(time.RFC3339Nano)
+	sale := Session{
+		ID: id, PCID: noPCSnackPCID, PCName: "No PC", Category: "Snacks",
+		Status: "closed", StartedAt: timestamp, EndedAt: timestamp,
+		PricingSnapshot: "Standalone snack sale", Snacks: request.Amount,
+		FinalAmount: request.Amount, AmountPaid: request.Amount, PaymentStatus: "paid",
+		PaymentAt: timestamp,
+		payments:  []paymentRecord{{ID: "SNACK-" + id, Timestamp: timestamp, Amount: request.Amount, Status: "paid"}},
+	}
+	sale, err = billingStore.commitStart(sale, now)
+	if err != nil {
+		writeBillingError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, sale)
 }
 
 func billingSyncPendingHandler(w http.ResponseWriter, r *http.Request) {
@@ -1982,6 +2178,8 @@ func registerBillingHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/api/billing/download", downloadBilling)
 	mux.HandleFunc("/api/billing/sync", billingSyncHandler)
 	mux.HandleFunc("/api/billing/report", billingReportHandler)
+	mux.HandleFunc("/api/billing/analytics", billingAnalyticsHandler)
+	mux.HandleFunc("/api/billing/snacks/no-pc", noPCSnackSaleHandler)
 	mux.HandleFunc("/internal/api/billing/sync/pending", billingSyncPendingHandler)
 	mux.HandleFunc("/internal/api/billing/sync/ack", billingSyncAckHandler)
 	mux.HandleFunc("/internal/api/local/sessions", localSessionHandler)
@@ -2103,9 +2301,21 @@ func downloadBilling(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid date", 400)
 		return
 	}
+	ledger, err := billingStore.openLocked()
+	if err != nil {
+		writeBillingError(w, err)
+		return
+	}
+	var csvData bytes.Buffer
+	if err := writeDayCSV(&csvData, day, ledger.sessions); err != nil {
+		writeBillingError(w, err)
+		return
+	}
 	w.Header().Set("Content-Disposition", "attachment; filename="+day+".csv")
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-	http.ServeFile(w, r, filepath.Join(billingStore.path, day+".csv"))
+	if _, err := w.Write(csvData.Bytes()); err != nil {
+		logf("billing", "could not write CSV export for %s: %v", day, err)
+	}
 }
 func writeBillingError(w http.ResponseWriter, err error) {
 	status := http.StatusBadRequest

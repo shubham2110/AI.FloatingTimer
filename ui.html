@@ -63,6 +63,20 @@
         padding: 0;
         border-radius: 0;
       }
+      header button.metric-filter {
+        padding: 4px 7px;
+        color: inherit;
+        text-align: left;
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 6px;
+      }
+      header button.metric-filter:hover { background: rgba(29, 78, 216, .06); }
+      header button.metric-filter[aria-pressed="true"] {
+        border-color: var(--accent);
+        box-shadow: inset 0 -2px var(--accent);
+      }
+      header button.metric-filter[aria-pressed="true"] span { color: var(--accent); font-weight: 600; }
       header .metric span,
       .metric span {
         display: block;
@@ -388,6 +402,25 @@
       .detail-card { padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: #fbfcfd; }
       .detail-card .row { gap: 6px; }
       .detail-card input[type="number"] { width: 84px; }
+      .analytics-periods { display: flex; flex-wrap: wrap; gap: 4px; }
+      .analytics-periods button[aria-pressed="true"] { color: #fff; background: var(--accent); border-color: var(--accent); }
+      .analytics-range { display: flex; align-items: end; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+      .analytics-range label { margin: 0; min-width: 145px; }
+      .analytics-range input { display: block; width: 100%; margin-top: 4px; }
+      .report-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; margin: 10px 0; }
+      .report-filters label { margin: 0; }
+      .report-filters input, .report-filters select { display: block; width: 100%; margin-top: 4px; }
+      .admin-billing-heading { display: flex; justify-content: space-between; align-items: end; gap: 12px; margin: 8px 0 14px; }
+      .admin-billing-heading p { margin: 2px 0 0; color: var(--muted); }
+      .sync-details { margin-top: 12px; }
+      .sync-details summary { color: var(--muted); font-size: 12px; }
+      .analytics-chart { min-width: 0; overflow-x: auto; }
+      .analytics-chart svg { display: block; width: 100%; min-width: 720px; height: auto; }
+      .analytics-chart text { fill: var(--muted); font: 11px system-ui, "Segoe UI", sans-serif; }
+      .analytics-chart-heading h3 { margin: 0; }
+      .analytics-chart-heading select { width: auto; min-width: 98px; margin: 0; }
+      .analytics-chart .chart-value { font-variant-numeric: tabular-nums; }
+      .analytics-chart .average-line { stroke: var(--amber); stroke-dasharray: 6 4; }
       #detailSpecialCommands { margin-top: 10px; }
 
       #settingsPage fieldset {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;border:1px solid var(--line);margin:8px 0;padding:9px}
@@ -539,6 +572,61 @@
     @media(min-width:721px){#dashboardGrid.theme-desktop{grid-template-columns:repeat(var(--theme-desktop),minmax(0,1fr))}}
       @media(max-width:720px){#dashboardGrid.theme-mobile{grid-template-columns:repeat(var(--theme-mobile),minmax(0,1fr))}}
       .snack-bar{margin-top:18px;display:grid;grid-template-columns:auto minmax(0,7rem) minmax(0,14rem) auto;gap:6px;align-items:center;padding:8px;justify-content:start}.snack-bar>*{min-width:0;width:100%;margin:0}
+      :root[data-theme="tryout-colorful"] body{background:linear-gradient(135deg,#fbfaf6 0%,#f1f5f4 52%,#edf4f6 100%)}
+      :root[data-theme="tryout-colorful"] header{background:linear-gradient(105deg,#18343d 0%,#214b55 62%,#344b63 100%);border-bottom-color:#45636a;box-shadow:0 3px 14px #18343d20;color:#f7faf9}
+      :root[data-theme="tryout-colorful"] header h1,
+      :root[data-theme="tryout-colorful"] header .metric b{color:#fff}
+      :root[data-theme="tryout-colorful"] header .metric span{color:#c6d6d7}
+      :root[data-theme="tryout-colorful"] header button.metric-filter{color:#f7faf9}
+      :root[data-theme="tryout-colorful"] header button.metric-filter:hover{background:#ffffff12}
+      :root[data-theme="tryout-colorful"] header button.metric-filter[aria-pressed="true"]{border-color:#d5b16a;box-shadow:inset 0 -2px #d5b16a}
+      :root[data-theme="tryout-colorful"] header button.metric-filter[aria-pressed="true"] span{color:#f0d496}
+      :root[data-theme="tryout-colorful"] header .header-actions>button,
+      :root[data-theme="tryout-colorful"] header .nav-split>button,
+      :root[data-theme="tryout-colorful"] header .nav-group>button{background:#ffffff0d;border-color:#ffffff38;color:#f7faf9}
+      :root[data-theme="tryout-colorful"] header .header-actions>button:hover,
+      :root[data-theme="tryout-colorful"] header .nav-split>button:hover,
+      :root[data-theme="tryout-colorful"] header .nav-group>button:hover{background:#ffffff20;border-color:#ffffff70}
+      :root[data-theme="tryout-colorful"] .nav-menu{background:#fff;border-color:#d9e3e5;box-shadow:0 12px 30px #18343d26;color:var(--text)}
+      :root[data-theme="tryout-colorful"] button.primary{background:linear-gradient(110deg,#167c76,#28576c);border-color:#176d69;box-shadow:0 3px 9px #1c625a30}
+      :root[data-theme="tryout-colorful"] button.primary:hover:not(:disabled){background:linear-gradient(110deg,#126c67,#21495e);border-color:#125e5a}
+      :root[data-theme="tryout-colorful"] input:focus-visible,
+      :root[data-theme="tryout-colorful"] select:focus-visible,
+      :root[data-theme="tryout-colorful"] button:focus-visible{outline-color:#bd985c99}
+      :root[data-theme="tryout-colorful"] .panel,
+      :root[data-theme="tryout-colorful"] .detail-card,
+      :root[data-theme="tryout-colorful"] dialog{border-color:#dce5e4;box-shadow:0 7px 22px #27434c10}
+      :root[data-theme="tryout-colorful"] th{background:#f2f6f5}
+      :root[data-theme="tryout-colorful"] .section h2,
+      :root[data-theme="tryout-colorful"] .panel h2{color:#284b54}
+      #dashboard[data-theme="tryout-colorful"] .dashboard-filters input,
+      #dashboard[data-theme="tryout-colorful"] .dashboard-filters select{border-radius:10px;background:#fff}
+      #dashboard[data-theme="tryout-colorful"] .dashboard-card{position:relative;border:1px solid #dce5e4;border-top:4px solid #24827a;border-radius:14px;background:linear-gradient(145deg,#fff 0%,#fbfdfc 100%);box-shadow:0 7px 20px #27434c12;padding:15px 16px;transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease}
+      #dashboard[data-theme="tryout-colorful"] .dashboard-card:nth-child(4n+2){border-top-color:#647a9b}
+      #dashboard[data-theme="tryout-colorful"] .dashboard-card:nth-child(4n+3){border-top-color:#c29a55}
+      #dashboard[data-theme="tryout-colorful"] .dashboard-card:nth-child(4n){border-top-color:#668675}
+      #dashboard[data-theme="tryout-colorful"] .dashboard-card:hover{transform:translateY(-2px);border-color:#b9cbc9;box-shadow:0 12px 26px #27434c1c}
+      #dashboard[data-theme="tryout-colorful"] .dashboard-head b{color:#28434b}
+      #dashboard[data-theme="tryout-colorful"] .dashboard-head>button{border-radius:999px;background:#edf3f2;border-color:#d2dfdd;color:#315b60}
+      #dashboard[data-theme="tryout-colorful"] .dashboard-time{display:inline-flex;align-items:center;min-height:42px;padding:2px 12px;border-radius:10px;background:#e8f3f1;color:#176e68;font-weight:700}
+      #dashboard[data-theme="tryout-colorful"] .dashboard-card:nth-child(4n+2) .dashboard-time{background:#edf1f7;color:#526987}
+      #dashboard[data-theme="tryout-colorful"] .dashboard-card:nth-child(4n+3) .dashboard-time{background:#f8f1e4;color:#936f34}
+      #dashboard[data-theme="tryout-colorful"] .dashboard-card:nth-child(4n) .dashboard-time{background:#edf3ef;color:#52735f}
+      #dashboard[data-theme="tryout-colorful"] .dashboard-card>.status{width:max-content;max-width:100%;padding:3px 9px;border:1px solid #dce5e4;border-radius:999px;background:#f5f8f7}
+      #dashboard[data-theme="tryout-colorful"] .dashboard-card.needs-attention{background:#fff4f1;border-color:#d9a69f}
+      #dashboard[data-theme="tryout-colorful"] .session-customer-fields input,
+      #dashboard[data-theme="tryout-colorful"] .session-customer-fields select,
+      #dashboard[data-theme="tryout-colorful"] .card-financials input,
+      #dashboard[data-theme="tryout-colorful"] .card-financials select{border-radius:8px;background:#fff}
+      #dashboard[data-theme="tryout-colorful"] .card-financials{padding:9px;border:1px solid #dce5e4;border-radius:10px;background:#f5f8f7}
+      #dashboard[data-theme="tryout-colorful"] .session-actions button{border-radius:8px;font-weight:600}
+      #dashboard[data-theme="tryout-colorful"] .session-actions button:not(.primary){background:#edf2f4;border-color:#d4dfe2;color:#435e69}
+      #dashboard[data-theme="tryout-colorful"] .session-actions button:nth-child(2):not(.primary){background:#edf5ef;border-color:#d2e3d6;color:#41694f}
+      #dashboard[data-theme="tryout-colorful"] .session-actions button:nth-child(3):not(.primary){background:#f8f2e7;border-color:#e8dcc1;color:#806536}
+      #dashboard[data-theme="tryout-colorful"] .quick-add button{border-radius:999px;background:#edf1f7;color:#526987}
+      #dashboard[data-theme="tryout-colorful"] .special-commands button{border-radius:999px;background:#eaf3f1;border-color:#ccdfdb;color:#236e67}
+      #dashboard[data-theme="tryout-colorful"] .snack-bar{border-color:#d8e3e1;background:linear-gradient(110deg,#f8fbfa,#f0f4f6);border-radius:12px}
+      #dashboard[data-theme="tryout-colorful"] .todays-bills{border-radius:14px;box-shadow:0 6px 20px #27434c10}
     </style>
   </head>
   <body>
@@ -546,14 +634,11 @@
     <header>
       <div class="brand"><h1>Overlay Timer Manager</h1>
         <div class="metrics">
-          <div class="metric"><span class="hint">Total</span><b
-              id="metricTotal">0</b></div>
-          <div class="metric"><span class="hint">Running</span><b
-              id="metricRunning">0</b></div>
-          <div class="metric"><span class="hint">Paused</span><b
-              id="metricPaused">0</b></div>
-          <div class="metric"><span class="hint">Offline</span><b
-              id="metricOffline">0</b></div>
+          <button type="button" class="metric metric-filter" data-pc-filter="online" aria-pressed="false" aria-label="Filter to online PCs" onclick="setDashboardStatusFilter('online')"><span class="hint">Online</span><b id="metricOnline">0</b></button>
+          <button type="button" class="metric metric-filter" data-pc-filter="running" aria-pressed="false" aria-label="Filter to running PCs" onclick="setDashboardStatusFilter('running')"><span class="hint">Running</span><b id="metricRunning">0</b></button>
+          <button type="button" class="metric metric-filter" data-pc-filter="paused" aria-pressed="false" aria-label="Filter to paused PCs" onclick="setDashboardStatusFilter('paused')"><span class="hint">Paused</span><b id="metricPaused">0</b></button>
+          <button type="button" class="metric metric-filter" data-pc-filter="offline" aria-pressed="false" aria-label="Filter to offline PCs" onclick="setDashboardStatusFilter('offline')"><span class="hint">Offline</span><b id="metricOffline">0</b></button>
+          <button type="button" class="metric metric-filter" data-pc-filter="all" aria-pressed="true" aria-label="Show all PCs" onclick="setDashboardStatusFilter('all')"><span class="hint">All</span><b id="metricTotal">0</b></button>
           <div class="metric"><span class="hint">Today's revenue</span><b
               id="metricRevenue">--</b></div>
         </div>
@@ -568,12 +653,15 @@
           </div>
           <div class="nav-menu">
             <button type="button" onclick="openSettings()">Set polling interval</button>
-            <button type="button" onclick="toggleFalsePolling()">False polling <span id="falsePollingState">Disabled</span></button>
+            <button type="button" onclick="toggleFalsePolling()">False polling <span id="falsePollingState">Enabled</span></button>
+            <button type="button" onclick="toggleProxy()">Proxy mode <span id="proxyState">Off</span></button>
+            <button type="button" onclick="showProxyLogin(true)">Change node proxy password</button>
             <button type="button" onclick="toggleTimerUnits()">Time units <span id="timerUnitsState">Hidden</span></button>
             <label class="nav-setting">Dashboard theme
               <select id="dashboardStyle" onchange="setDashboardStyle(this.value)">
                 <option value="legacy">Legacy</option><option value="new">New</option>
-                <option value="experimental">Experimental</option><option value="tryout" selected>TryOut</option>
+                <option value="experimental">Experimental</option><option value="tryout">TryOut</option>
+                <option value="tryout-colorful" selected>TryOutColorful</option>
               </select>
             </label>
             <label class="nav-setting">Upload theme <input id="themeUpload" type="file" accept=".json,application/json" onchange="uploadTheme(this)"></label>
@@ -599,7 +687,8 @@
           <button type="button" aria-expanded="false" onclick="toggleNavMenu(this)">Billing <span aria-hidden="true">▾</span></button>
           <div class="nav-menu">
             <button type="button" onclick="showDashboard(); closeNavMenus(); $('snackAmount').scrollIntoView({block:'center'}); $('snackAmount').focus()">Add Snack</button>
-            <button type="button" onclick="showReports()">Report Section</button>
+            <button type="button" onclick="showBillingReports()">Billing Reports</button>
+            <button type="button" onclick="showAdminBilling()">Admin Billing</button>
             <button type="button" onclick="openPricing()">Set Pricing</button>
           </div>
         </div>
@@ -641,58 +730,196 @@
           <button id="removeSelected" class="danger" hidden onclick="removeSelectedBills(this)">Remove selected</button></div>
           <small id="todayPaymentStatus" role="status"></small><div id="todayBills" style="overflow-x:auto"></div>
         </section>
-      </section><section id="reports" hidden>
+      </section><section id="billingReports" hidden>
+      <div class="admin-billing-heading">
+        <div><h1>Billing Reports</h1><p>Revenue analytics and consolidated totals across synchronized PCs.</p></div>
+      </div>
+      <section class="panel" style="margin-top:16px">
+        <div class="top">
+          <div>
+            <h2>Revenue analytics</h2>
+            <div class="hint">Daily collections by payment date (Asia/Kolkata), with average per calendar day.</div>
+          </div>
+          <div class="analytics-periods" role="group" aria-label="Collection chart period">
+            <button type="button" data-analytics-period="week" aria-pressed="false" onclick="setBillingAnalyticsPeriod('week')">1W</button>
+            <button type="button" data-analytics-period="month" aria-pressed="true" onclick="setBillingAnalyticsPeriod('month')">1M</button>
+            <button type="button" data-analytics-period="six-months" aria-pressed="false" onclick="setBillingAnalyticsPeriod('six-months')">6M</button>
+            <button type="button" data-analytics-period="custom" aria-pressed="false" onclick="setBillingAnalyticsPeriod('custom')">Custom</button>
+          </div>
+        </div>
+        <div id="analyticsCustomRange" class="analytics-range" hidden>
+          <label>From<input id="analyticsStartDate" type="date" onchange="loadBillingAnalytics()" /></label>
+          <label>To<input id="analyticsEndDate" type="date" onchange="loadBillingAnalytics()" /></label>
+        </div>
+        <div class="report-filters">
+          <label>Category
+            <select id="analyticsCategory" onchange="loadBillingAnalytics()"><option value>All categories</option></select>
+          </label>
+          <label>PC
+            <select id="analyticsPC" onchange="loadBillingAnalytics()"><option value>All PCs</option></select>
+          </label>
+          <label>Customer name
+            <input id="analyticsCustomer" type="search" placeholder="Search customer" oninput="scheduleBillingAnalyticsLoad()" />
+          </label>
+        </div>
+        <div id="billingAnalyticsStatus" class="msg" role="status"></div>
+        <div class="metrics">
+          <div class="metric"><span class="hint">This month's collections</span><b id="analyticsThisMonth">INR 0</b></div>
+          <div class="metric"><span class="hint">Last month's collections</span><b id="analyticsLastMonth">INR 0</b></div>
+          <div class="metric"><span class="hint">Period collections</span><b id="analyticsRangeCollected">INR 0</b></div>
+          <div class="metric"><span class="hint">Average daily</span><b id="analyticsAverageDaily">INR 0.00</b></div>
+          <div class="metric"><span class="hint">Game amount</span><b id="analyticsRangeGame">INR 0</b></div>
+          <div class="metric"><span class="hint">Snacks</span><b id="analyticsRangeSnacks">INR 0</b></div>
+          <div class="metric"><span class="hint">Period billed</span><b id="analyticsRangeBilled">INR 0</b></div>
+          <div class="metric"><span class="hint">Current outstanding</span><b id="analyticsRangeOutstanding">INR 0</b></div>
+          <div class="metric"><span class="hint">Sessions started</span><b id="analyticsRangeSessions">0</b></div>
+        </div>
+        <div class="detail-card">
+          <div class="top analytics-chart-heading">
+            <h3 id="analyticsChartTitle">Daily collections</h3>
+            <select id="analyticsChartGrouping" aria-label="Collection bar grouping" onchange="setBillingAnalyticsGrouping(this.value)">
+              <option value="day">Daily</option>
+              <option value="week">Weekly</option>
+              <option value="month">Monthly</option>
+            </select>
+          </div>
+          <div id="analyticsDailyChart" class="analytics-chart"></div>
+        </div>
+        <h3 style="margin-top:14px">Category usage and earnings</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Category</th><th>Gaming sessions</th><th>Snack-only sales</th><th>Time used</th><th>Game</th><th>Snacks</th><th>Total billed</th><th>Collected</th><th>Balance due</th></tr></thead>
+            <tbody id="analyticsCategoryRows"></tbody>
+          </table>
+        </div>
+      </section>
       <section class="panel" style="margin-top:16px">
           <div class="top">
             <div>
-              <h2>Consolidated daily billing</h2>
-              <div class="hint">Session date is based on the start time in
-                Asia/Kolkata.</div>
+              <h2>Consolidated report</h2>
+              <div class="hint">Choose a day, calendar week, month, year, or custom date range.</div>
             </div>
             <div class="row">
-              <input id="billingReportDate" type="date"
-                onchange="loadBillingReport()" />
-              <button id="syncBillingButton" class="primary"
-                onclick="syncBillingNow()">Sync PCs</button>
+              <div class="analytics-periods" role="group" aria-label="Consolidated report period">
+                <button type="button" data-consolidated-period="day" aria-pressed="true" onclick="setConsolidatedPeriod('day')">D</button>
+                <button type="button" data-consolidated-period="week" aria-pressed="false" onclick="setConsolidatedPeriod('week')">W</button>
+                <button type="button" data-consolidated-period="month" aria-pressed="false" onclick="setConsolidatedPeriod('month')">M</button>
+                <button type="button" data-consolidated-period="year" aria-pressed="false" onclick="setConsolidatedPeriod('year')">Y</button>
+                <button type="button" data-consolidated-period="custom" aria-pressed="false" onclick="setConsolidatedPeriod('custom')">Custom</button>
+              </div>
+              <label>Anchor date
+                <input id="billingReportAnchorDate" type="date" onchange="setConsolidatedAnchor(this.value)" />
+              </label>
+              <button id="syncBillingReportsButton" class="primary"
+                onclick="syncBillingNow('syncBillingReportsButton')">Sync PCs</button>
             </div>
           </div>
+          <div id="billingReportCustomRange" class="analytics-range" hidden>
+            <label>From<input id="billingReportCustomStart" type="date" onchange="setConsolidatedCustomDate('start',this.value)" /></label>
+            <label>To<input id="billingReportCustomEnd" type="date" onchange="setConsolidatedCustomDate('end',this.value)" /></label>
+          </div>
           <div id="billingReportStatus" class="msg" role="status"></div>
+          <div class="report-filters">
+            <label>Category
+              <select id="reportCategory" onchange="renderBillingReport()"><option value>All categories</option></select>
+            </label>
+            <label>PC
+              <select id="reportPC" onchange="renderBillingReport()"><option value>All PCs</option></select>
+            </label>
+            <label>Customer name
+              <input id="reportCustomer" type="search" placeholder="Search customer" oninput="renderBillingReport()" />
+            </label>
+          </div>
           <div class="metrics">
-            <div class="metric"><span class="hint">Gaming systems</span><b
+            <div class="metric"><span class="hint">PCs with sessions</span><b
                 id="reportSystems">0</b></div>
-            <div class="metric"><span class="hint">Sessions</span><b
+            <div class="metric"><span class="hint">Gaming sessions</span><b
                 id="reportSessions">0</b></div>
             <div class="metric"><span class="hint">Unique customers</span><b
                 id="reportCustomers">0</b></div>
+            <div class="metric"><span class="hint">Game amount</span><b
+                id="reportGameAmount">INR 0</b></div>
+            <div class="metric"><span class="hint">Snacks</span><b
+                id="reportSnackAmount">INR 0</b></div>
             <div class="metric"><span class="hint">Total billed</span><b
                 id="reportBilled">INR 0</b></div>
             <div class="metric"><span class="hint">Collected</span><b
                 id="reportRevenue">INR 0</b></div>
-            <div class="metric"><span class="hint">Outstanding</span><b
+            <div class="metric"><span class="hint">Balance due</span><b
                 id="reportOutstanding">INR 0</b></div>
           </div>
-          <h3>PC-wise totals</h3>
+          <h3>Totals by PC</h3>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>PC</th><th>Sessions</th><th>Billed</th><th>Collected</th><th>Outstanding</th></tr></thead>
+              <thead><tr><th>PC</th><th>Sessions</th><th>Game</th><th>Snacks</th><th>Total billed</th><th>Collected</th><th>Balance due</th></tr></thead>
               <tbody id="billingReportPCs"></tbody>
             </table>
           </div>
-          <h3>Device synchronization</h3>
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>Device</th><th>Status</th><th>Pending</th><th>Last
-                    successful sync</th><th>Details</th></tr></thead>
-              <tbody id="billingReportDevices"></tbody>
-            </table>
+          <details class="sync-details">
+            <summary>PC sync status and diagnostics</summary>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Device</th><th>Status</th><th>Pending</th><th>Last successful sync</th><th>Details</th></tr></thead>
+                <tbody id="billingReportDevices"></tbody>
+              </table>
+            </div>
+          </details>
+        </section>
+      </section>
+      <section id="adminBilling" hidden>
+        <div class="admin-billing-heading">
+          <div><h1>Admin Billing</h1><p>Billing entries, editable session history, and PC synchronization.</p></div>
+        </div>
+        <section class="panel" style="margin-top:16px">
+          <div class="top">
+            <div>
+              <h2>Billing entries</h2>
+              <div class="hint" id="adminBillingPeriodLabel">Entries for the selected period.</div>
+            </div>
+            <div class="row">
+              <div class="analytics-periods" role="group" aria-label="Billing entries period">
+                <button type="button" data-consolidated-period="day" aria-pressed="true" onclick="setConsolidatedPeriod('day')">D</button>
+                <button type="button" data-consolidated-period="week" aria-pressed="false" onclick="setConsolidatedPeriod('week')">W</button>
+                <button type="button" data-consolidated-period="month" aria-pressed="false" onclick="setConsolidatedPeriod('month')">M</button>
+                <button type="button" data-consolidated-period="year" aria-pressed="false" onclick="setConsolidatedPeriod('year')">Y</button>
+                <button type="button" data-consolidated-period="custom" aria-pressed="false" onclick="setConsolidatedPeriod('custom')">Custom</button>
+              </div>
+              <label>Anchor date
+                <input id="adminBillingAnchorDate" type="date" onchange="setConsolidatedAnchor(this.value)" />
+              </label>
+              <button id="syncBillingAdminButton" class="primary"
+                onclick="syncBillingNow('syncBillingAdminButton')">Sync PCs</button>
+            </div>
           </div>
-          <h3>Customer records</h3>
-          <div class="table-wrap">
+          <div id="adminBillingCustomRange" class="analytics-range" hidden>
+            <label>From<input id="adminBillingCustomStart" type="date" onchange="setConsolidatedCustomDate('start',this.value)" /></label>
+            <label>To<input id="adminBillingCustomEnd" type="date" onchange="setConsolidatedCustomDate('end',this.value)" /></label>
+          </div>
+          <div id="adminBillingStatus" class="msg" role="status"></div>
+          <div class="report-filters">
+            <label>Category
+              <select id="adminBillingCategory" onchange="renderBillingEntries()"><option value>All categories</option></select>
+            </label>
+            <label>PC
+              <select id="adminBillingPC" onchange="renderBillingEntries()"><option value>All PCs</option></select>
+            </label>
+            <label>Customer name
+              <input id="adminBillingCustomer" type="search" placeholder="Search customer" oninput="renderBillingEntries()" />
+            </label>
+          </div>
+          <details class="sync-details">
+            <summary>PC sync status and diagnostics</summary>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Device</th><th>Status</th><th>Pending</th><th>Last successful sync</th><th>Details</th></tr></thead>
+                <tbody id="adminBillingDevices"></tbody>
+              </table>
+            </div>
+          </details>
+          <div class="table-wrap" style="margin-top:14px">
             <table>
-              <thead><tr><th>Customer</th><th>PC /
-                    ID</th><th>Players</th><th>Session
-                    date</th><th>Start</th><th>End</th><th>Duration</th><th>Adjustments</th><th>Billed</th><th>Collected</th><th>Due</th><th>Payment</th></tr></thead>
-              <tbody id="billingReportRecords"></tbody>
+              <thead><tr><th>Category</th><th>PC</th><th>Customer / sale</th><th>Time</th><th>Game</th><th>Snacks</th><th>Total</th><th>Collected</th><th>Balance due</th><th>Payment</th></tr></thead>
+              <tbody id="adminBillingEntries"></tbody>
             </table>
           </div>
         </section>
@@ -841,6 +1068,12 @@
         <p id="priceStatus" role="status"></p>
       </section>
     </div>
+    <dialog id="proxyDialog"><form onsubmit="submitProxyLogin(event)">
+      <h2 id="proxyTitle">Enable proxy mode</h2>
+      <label>Node password <input type="password" id="proxyPassword" required autocomplete="current-password"></label>
+      <label id="proxyNewField" hidden>New password <input type="password" id="proxyNew" maxlength="256" autocomplete="new-password"></label>
+      <p role="status" id="proxyMessage"></p><div class="row"><button type="button" onclick="$('proxyDialog').close()">Cancel</button><button class="primary">Save</button></div>
+    </form></dialog>
     <dialog id="pollingDialog" aria-labelledby="pollingTitle">
       <form onsubmit="saveSettings(event)">
         <h2 id="pollingTitle">Polling interval</h2>
@@ -858,7 +1091,7 @@
         <h2 id="billEditorTitle">Edit bill</h2>
         <div class="bill-fields">
           <label>Customer name <input id="billCustomer" maxlength="120" list="customerNameSuggestions"></label>
-          <label>Customers <input id="billPlayers" type="number" min="1" max="4"></label>
+          <label>Customers <input id="billPlayers" type="number" min="0" max="4"></label>
           <label>System <select id="billSystem" onchange="billSystemChanged()"></select></label>
           <label>PC name on bill <input id="billPCName" required maxlength="120"></label>
           <label>PC category / pricing level <input id="billCategory" list="billCategories" maxlength="120"></label>
@@ -913,7 +1146,9 @@
       let listPromise = null;
       const $ = (id) => document.getElementById(id);
       const SETTINGS_KEY = "overlay-timer-ui-settings-v1";
-      let uiSettings = { pollIntervalSeconds: 5, falsePolling: false };
+      const PC_CATEGORY_PREFERENCES_KEY = "overlay-timer-pc-category-preferences-v1";
+      let pcCategoryPreferences = new Map();
+      let uiSettings = { pollIntervalSeconds: 5, falsePolling: true };
       function validPollInterval(value) {
         return Number.isInteger(value) && value >= 1 && value <= 300;
       }
@@ -921,8 +1156,27 @@
         try {
           const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
           if (validPollInterval(saved.pollIntervalSeconds)) uiSettings.pollIntervalSeconds = saved.pollIntervalSeconds;
-          uiSettings.falsePolling = saved.falsePolling === true;
+          if (typeof saved.falsePolling === "boolean") uiSettings.falsePolling = saved.falsePolling;
         } catch {} // Defaults work even if browser storage is unavailable.
+      }
+      function restorePCCategoryPreferences() {
+        try {
+          const saved = JSON.parse(localStorage.getItem(PC_CATEGORY_PREFERENCES_KEY) || "{}");
+          if (saved && typeof saved === "object" && !Array.isArray(saved)) {
+            pcCategoryPreferences = new Map(Object.entries(saved)
+              .filter(([id, category]) => id && typeof category === "string"));
+          }
+        } catch { pcCategoryPreferences = new Map(); }
+      }
+      function preferredCategoryForPC(id) {
+        return pcCategoryPreferences.get(String(id)) || "";
+      }
+      function rememberCategoryForPC(id, category) {
+        if (!id || !category) return;
+        pcCategoryPreferences.set(String(id), category);
+        try {
+          localStorage.setItem(PC_CATEGORY_PREFERENCES_KEY, JSON.stringify(Object.fromEntries(pcCategoryPreferences)));
+        } catch {}
       }
       function toggleNavMenu(button) {
         const group=button.closest(".nav-group");
@@ -940,17 +1194,21 @@
         }
       }
       const VIEW_SETTINGS_KEY="overlay-timer-dashboard-view-v1";
-      let dashboardView={style:"tryout",showUnits:false};
-      const builtInThemes=["legacy","new","experimental","tryout"];
+      let dashboardView={style:"tryout-colorful",showUnits:false};
+      const builtInThemes=["legacy","new","experimental","tryout","tryout-colorful"];
+      const builtInThemeNames={legacy:"Legacy",new:"New",experimental:"Experimental",tryout:"TryOut","tryout-colorful":"TryOutColorful"};
       const customThemes=new Map();
       const tryOutTheme={version:1,name:"TryOut",layout:"experimental",tileOrder:[],
         cardOrder:["header","timer","status","customer","financials","actions","message","shortcuts","controls","commands","feedback","billing","played"],
         actions:{
           idle:{primary:"start",weights:[2,1,1]},
           continuing:{primary:"save",weights:[1,2,1],labels:{save:"Continue Session"}},
+          adjusting:{primary:"save",weights:[1,2,1]},
           active:{primary:"close",weights:[1,1,2],labels:{close:"Close Session"}}
         }};
-      function currentTheme(){return dashboardView.style==="tryout"?tryOutTheme:customThemes.get(dashboardView.style);}
+      const tryOutColorfulTheme={...tryOutTheme,name:"TryOutColorful",columns:3,mobileColumns:2,
+        colors:{bg:"#f2f5f4",panel:"#ffffff",line:"#dce5e4","line-strong":"#b9cbc9",text:"#26383f",muted:"#5f727a",faint:"#87989e",accent:"#176e68",blue:"#526987","blue-bg":"#edf1f7",green:"#287251","green-bg":"#edf5ef",amber:"#936f34","amber-bg":"#f8f1e4",red:"#a53b43",grey:"#87949a"}};
+      function currentTheme(){return ({tryout:tryOutTheme,"tryout-colorful":tryOutColorfulTheme})[dashboardView.style]||customThemes.get(dashboardView.style);}
       function downloadThemeExample(){
         const {id,...theme}=currentTheme()||tryOutTheme;
         const url=URL.createObjectURL(new Blob([JSON.stringify(theme,null,2)],{type:"application/json"}));
@@ -963,7 +1221,7 @@
           customThemes.clear();
           for(const theme of themes)customThemes.set(theme.id,theme);
           const options=[...customThemes.values()].sort((a,b)=>a.name.localeCompare(b.name));
-          $("dashboardStyle").innerHTML=builtInThemes.map(id=>`<option value="${id}">${id==="tryout"?"TryOut":id[0].toUpperCase()+id.slice(1)}</option>`).join("")+
+          $("dashboardStyle").innerHTML=builtInThemes.map(id=>`<option value="${id}">${builtInThemeNames[id]}</option>`).join("")+
             options.map(t=>`<option value="${esc(t.id)}">${esc(t.name)}</option>`).join("");
           updateDashboardView();
         }catch(e){$("themeStatus").textContent="Could not load uploaded themes.";}
@@ -989,6 +1247,8 @@
         const theme=currentTheme();
         const layout=theme?.layout||(builtInThemes.includes(dashboardView.style)?dashboardView.style:"experimental");
         $("dashboard").setAttribute("data-style",layout);
+        $("dashboard").setAttribute("data-theme",dashboardView.style);
+        document.documentElement.dataset.theme=dashboardView.style;
         const vars=document.documentElement?.style;
         if(vars){
           for(const token of ["bg","panel","line","line-strong","text","muted","faint","accent","blue","blue-bg","green","green-bg","amber","amber-bg","red","grey"]){
@@ -997,10 +1257,10 @@
           const grid=$("dashboardGrid");
           for(const [field,key] of [["columns","desktop"],["mobileColumns","mobile"]]){
             grid.classList.toggle("theme-"+key,!!theme?.[field]);
-            if(theme?.[field])grid.style.setProperty("--theme-"+key,theme[field]);
+            if(theme?.[field])grid.style.setProperty("--theme-"+key,theme[field]);else grid.style.removeProperty("--theme-"+key);
           }
         }
-        $("dashboardStyle").value=theme?.id||(theme===tryOutTheme?"tryout":layout);
+        $("dashboardStyle").value=theme?.id||(builtInThemes.includes(dashboardView.style)?dashboardView.style:layout);
         if(typeof pcs!=="undefined") for(const p of pcs) applyTileTheme(p,currentCardSession(p));
         $("timerUnitsState").textContent=dashboardView.showUnits?"Shown":"Hidden";
       }
@@ -1071,11 +1331,98 @@
         }
         renderCachedStatuses();
       }
+      let proxyEnabled=false;
+      let autoLogin=false;
+      try{const mode=sessionStorage.getItem("timer-proxy-enabled");proxyEnabled=mode==="yes";autoLogin=mode==="auto";}catch{}
+      $("proxyState").textContent=proxyEnabled?"On":"Off";
+      let lanManager="",probePending=null,lastProbe=0,proxyPromptShown=false,automaticPrompt=false;
+      async function directLAN(checkTimer=false){
+        const info=await fetch("/api/proxy/network",{cache:"no-store",signal:AbortSignal.timeout(3000)}).then(r=>r.json());
+        if(!info.instance||!Array.isArray(info.endpoints))throw Error("No LAN addresses");
+        return Promise.any(info.endpoints.map(async endpoint=>{
+          const opts={mode:"cors",credentials:"omit",cache:"no-store",redirect:"error",signal:AbortSignal.timeout(2500)};
+          const r=await fetch(endpoint+"/api/proxy/local-probe",opts);
+          if(!r.ok||(await r.json()).instance!==info.instance)throw Error("Different dashboard");
+          if(checkTimer){
+            const timer=new URL(endpoint);timer.port=info.timerPort;timer.pathname="/status";
+            const status=await fetch(timer,opts);
+            if(!status.ok||!validTimerStatus(await status.json()))throw Error("Timer unavailable");
+          }
+          return endpoint;
+        }));
+      }
+      function promptForProxy(){
+        if(proxyPromptShown||$("proxyDialog").open)return;
+        proxyPromptShown=true;showProxyLogin(false,true);
+        $("proxyMessage").textContent="This browser could not reach the timers directly. Enter this node’s password to use its proxy.";
+      }
+      function resolveLAN(){
+        if(lanManager)return Promise.resolve(lanManager);
+        if(!probePending && Date.now()-lastProbe>10000){
+          lastProbe=Date.now();
+          probePending=directLAN().then(base=>{lanManager=base;proxyPromptShown=false;$("proxyState").textContent="Off";return base;})
+            .catch(()=>"").finally(()=>{probePending=null;});
+        }
+        return probePending||Promise.resolve("");
+      }
+      let checkingTimers=false,lastTimerProbe=0;
+      async function checkTimerNetwork(){
+        if(proxyEnabled||proxyPromptShown||checkingTimers||Date.now()-lastTimerProbe<30000||!hostPollers.size)return;
+        if([...hostPollers.values()].some(p=>p.failedAt===null))return;
+        checkingTimers=true;lastTimerProbe=Date.now();
+        try{await directLAN(true);}catch{if([...hostPollers.values()].every(p=>p.failedAt!==null)){
+          if(autoLogin){proxyEnabled=true;$("proxyState").textContent="On";}else promptForProxy();
+        }}
+        finally{checkingTimers=false;}
+      }
+      function showProxyLogin(change=false,automatic=false){
+        automaticPrompt=automatic;
+        const dialog=$("proxyDialog");
+        $("proxyNewField").hidden=!change;$("proxyNew").required=change;
+        $("proxyNew").value="";$("proxyPassword").value="";$("proxyMessage").textContent="";
+        $("proxyTitle").textContent=change?"Change this node’s proxy password":"Enable proxy mode";
+        if(!dialog.open)dialog.showModal();
+        $("proxyPassword").focus();
+      }
+      async function submitProxyLogin(event){
+        event.preventDefault();
+        const change=!$("proxyNewField").hidden;
+        try{
+          await request("/api/proxy/"+(change?"password":"login"),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({Password:$("proxyPassword").value,NewPassword:$("proxyNew").value})});
+          sessionStorage.setItem("timer-proxy-enabled",automaticPrompt?"auto":"yes");location.reload();
+        }catch(e){$("proxyMessage").textContent=e.message;}
+      }
+      async function toggleProxy(){
+        if(!proxyEnabled||$("proxyState").textContent==="Sign in"){showProxyLogin();return;}
+        try{await request("/api/proxy/logout",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+          sessionStorage.removeItem("timer-proxy-enabled");location.reload();}
+        catch(e){$("discoveryStatus").textContent=e.message;}
+      }
+      function timerRequest(pc,service,action,options){
+        if(!proxyEnabled)return request((service==="host"?hostAddress(pc):pc.address.replace(/\/$/,""))+"/"+action,options);
+        return request("/api/proxy/relay/"+encodeURIComponent(pc.id)+"/"+service+"/"+encodeURIComponent(action),{...options,credentials:"same-origin",mode:"same-origin"});
+      }
       async function request(path, options = {}) {
-        const r = await fetch(path, { cache: "no-store", ...options });
+        const management=path.startsWith("/api/")&&!path.startsWith("/api/proxy/");
+        const localFetch=base=>fetch(base+path,{cache:"no-store",...options,credentials:"omit",mode:"cors",redirect:"error"});
+        let r;
+        if(management && lanManager && !proxyEnabled){
+          try{r=await localFetch(lanManager);}
+          catch(e){lanManager="";lastProbe=0;if(options.method && options.method!=="GET")throw e;}
+        }
+        if(!r)r=await fetch(path,{cache:"no-store",...options});
+        if(management && r.headers.get("X-Timer-Login")==="required"){
+          const base=await resolveLAN();
+          if(base){proxyEnabled=false;r=await localFetch(base);}
+          else promptForProxy();
+        }else if(management && r.headers.get("X-Timer-Proxy")==="required"){
+          if(!proxyEnabled && await resolveLAN()){$("proxyState").textContent="Off";}
+          else{proxyEnabled=true;$("proxyState").textContent="On";}
+        }else if(path.startsWith("/api/proxy/relay/") && r.status===401){promptForProxy();}
         const type=r.headers.get("content-type")||"", body=await r.text();
         let data;
         try {data=JSON.parse(body);} catch {}
+        if(r.status===401 && !path.startsWith("/api/proxy/login") && !path.startsWith("/api/proxy/password")) $("proxyState").textContent="Sign in";
         if (!r.ok) throw Object.assign(new Error(data?.error||data?.message||body.slice(0,256)||"HTTP "+r.status),{status:r.status});
         if (!type.includes("json")||data===undefined) throw new Error("Unexpected response content type or invalid JSON");
         return data;
@@ -1129,7 +1476,7 @@
         requests.add(controller);
         const timeout = setTimeout(() => controller.abort(), 4000);
         try {
-          const result = await request(target.address.replace(/\/$/, "") + "/" + action, {
+          const result = await timerRequest(target,"timer",action,{
             ...options,
             signal: controller.signal,
             credentials: "omit",
@@ -1526,7 +1873,7 @@
         } finally {button.disabled = false;}
       }
       function showPage(page) {
-        for (const id of ["dashboard", "detail", "reports", "settingsPage"]) {
+        for (const id of ["dashboard", "detail", "billingReports", "adminBilling", "settingsPage"]) {
           $(id).hidden = id !== page;
         }
         closeNavMenus();
@@ -1697,7 +2044,7 @@
         poller.controller = controller;
         const timeout = setTimeout(() => controller.abort(), 4000);
         try {
-          const t = await request(address + "/status", { signal: controller.signal, credentials: "omit", mode: "cors" });
+          const t = await timerRequest(hostSystems(address)[0],"host","status",{ signal: controller.signal, credentials: "omit", mode: "cors" });
           if (!isCurrent()) return;
           if (!validTimerStatus(t)) throw new Error("Invalid timer status");
           poller.sample = { status: t, receivedAt: performance.now() };
@@ -1706,6 +2053,7 @@
         } catch (e) {
           if (!isCurrent()) return;
           if (poller.failedAt === null) poller.failedAt = performance.now();
+          if(!proxyEnabled)void checkTimerNetwork();
           renderHostStatuses(address, poller, true);
         } finally {
           clearTimeout(timeout);
@@ -1791,6 +2139,8 @@
         state.repeatAdjustment=false;
         state.timerDraft={value:$("cv-"+id).value,unit:$("cf-"+id).value};
         $("dm-"+id).textContent="";
+        const p=pcs.find(item=>item.id===id);
+        if(p)applyTileTheme(p,currentCardSession(p));
         renderCardBill(id);
       }
       function cardUnitChanged(id) { cardNumberChanged(id); }
@@ -1903,6 +2253,19 @@
       const pendingSessionStarts = new Set();
       let billingCatalog = { currency: "INR", entries: [] };
       let activeBillingSessions = [];
+      let dashboardStatusFilter = "all";
+      let billingAnalyticsPeriod = "month";
+      let billingAnalyticsGrouping = "day";
+      let billingAnalyticsDaily = [];
+      let billingAnalyticsAverageDaily = 0;
+      let billingConsolidatedPeriod = "day";
+      let billingConsolidatedAnchor = "";
+      let billingConsolidatedCustomStart = "";
+      let billingConsolidatedCustomEnd = "";
+      let billingSyncInProgress = false;
+      let billingReportRequestID = 0;
+      let billingAnalyticsRequestID = 0;
+      let billingAnalyticsDebounce = 0;
       
       let requestSequence = 0;
       const requestHistory = [];
@@ -1922,6 +2285,298 @@
           timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit",
         }).formatToParts(new Date()).map(part => [part.type, part.value]));
         return `${values.year}-${values.month}-${values.day}`;
+      }
+
+      function shiftBillingDate(value, months, days = 0) {
+        const [year, month, day] = value.split("-").map(Number);
+        const shifted = new Date(Date.UTC(year, month - 1 + months, 1));
+        const lastDay = new Date(Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth() + 1, 0)).getUTCDate();
+        shifted.setUTCDate(Math.min(day, lastDay) + days);
+        return shifted.toISOString().slice(0, 10);
+      }
+
+      function syncConsolidatedPeriodControls() {
+        if (!billingConsolidatedAnchor) billingConsolidatedAnchor = billingTodayDate();
+        if (!billingConsolidatedCustomStart) billingConsolidatedCustomStart = billingConsolidatedAnchor.slice(0, 7) + "-01";
+        if (!billingConsolidatedCustomEnd) billingConsolidatedCustomEnd = billingConsolidatedAnchor;
+        document.querySelectorAll("[data-consolidated-period]").forEach(button => {
+          button.setAttribute("aria-pressed", String(button.dataset.consolidatedPeriod === billingConsolidatedPeriod));
+        });
+        for (const id of ["billingReportAnchorDate", "adminBillingAnchorDate"]) {
+          $(id).value = billingConsolidatedAnchor;
+        }
+        for (const [id, value] of [
+          ["billingReportCustomStart", billingConsolidatedCustomStart],
+          ["adminBillingCustomStart", billingConsolidatedCustomStart],
+          ["billingReportCustomEnd", billingConsolidatedCustomEnd],
+          ["adminBillingCustomEnd", billingConsolidatedCustomEnd],
+        ]) $(id).value = value;
+        $("billingReportCustomRange").hidden = billingConsolidatedPeriod !== "custom";
+        $("adminBillingCustomRange").hidden = billingConsolidatedPeriod !== "custom";
+      }
+
+      function setConsolidatedPeriod(period) {
+        billingConsolidatedPeriod = period;
+        syncConsolidatedPeriodControls();
+        loadBillingReport();
+      }
+
+      function setConsolidatedAnchor(value) {
+        if (!value) return;
+        billingConsolidatedAnchor = value;
+        syncConsolidatedPeriodControls();
+        loadBillingReport();
+      }
+
+      function setConsolidatedCustomDate(boundary, value) {
+        if (boundary === "start") billingConsolidatedCustomStart = value;
+        else billingConsolidatedCustomEnd = value;
+        syncConsolidatedPeriodControls();
+        loadBillingReport();
+      }
+
+      function consolidatedReportRange() {
+        const anchor = billingConsolidatedAnchor || billingTodayDate();
+        if (billingConsolidatedPeriod === "day") return {start:anchor, end:anchor};
+        if (billingConsolidatedPeriod === "week") {
+          const weekday = new Date(anchor + "T00:00:00Z").getUTCDay();
+          const start = shiftBillingDate(anchor, 0, -((weekday + 6) % 7));
+          return {start, end:shiftBillingDate(start, 0, 6)};
+        }
+        if (billingConsolidatedPeriod === "month") {
+          const start = anchor.slice(0, 7) + "-01";
+          const [year, month] = anchor.split("-").map(Number);
+          const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+          return {start, end:`${anchor.slice(0, 7)}-${String(lastDay).padStart(2, "0")}`};
+        }
+        if (billingConsolidatedPeriod === "year") {
+          const year = anchor.slice(0, 4);
+          return {start:`${year}-01-01`, end:`${year}-12-31`};
+        }
+        return {start:billingConsolidatedCustomStart, end:billingConsolidatedCustomEnd};
+      }
+
+      function setBillingAnalyticsPeriod(period) {
+        billingAnalyticsPeriod = period;
+        document.querySelectorAll("[data-analytics-period]").forEach(button => {
+          button.setAttribute("aria-pressed", String(button.dataset.analyticsPeriod === period));
+        });
+        const custom = period === "custom";
+        $("analyticsCustomRange").hidden = !custom;
+        if (custom) {
+          const end = billingTodayDate();
+          if (!$("analyticsEndDate").value) $("analyticsEndDate").value = end;
+          if (!$("analyticsStartDate").value) $("analyticsStartDate").value = shiftBillingDate(end, -1);
+        }
+        loadBillingAnalytics();
+      }
+
+      function billingAnalyticsRange() {
+        const end = billingTodayDate();
+        if (billingAnalyticsPeriod === "week") return { start: shiftBillingDate(end, 0, -6), end };
+        if (billingAnalyticsPeriod === "six-months") return { start: shiftBillingDate(end, -6), end };
+        if (billingAnalyticsPeriod === "custom") {
+          return { start: $("analyticsStartDate").value, end: $("analyticsEndDate").value };
+        }
+        return { start: shiftBillingDate(end, -1), end };
+      }
+
+      function formatAverageDaily(value) {
+        const amount = Number(value);
+        return "INR " + (Number.isFinite(amount) ? amount : 0).toLocaleString("en-IN", {
+          minimumFractionDigits: 2, maximumFractionDigits: 2,
+        });
+      }
+
+      function scheduleBillingAnalyticsLoad() {
+        clearTimeout(billingAnalyticsDebounce);
+        billingAnalyticsDebounce = setTimeout(loadBillingAnalytics, 250);
+      }
+
+      function updateAnalyticsFilterOptions(id, options, emptyLabel, valueFor, labelFor) {
+        const select = $(id);
+        const selected = select.value;
+        select.innerHTML = `<option value>${esc(emptyLabel)}</option>` + options.map(option =>
+          `<option value="${esc(valueFor(option))}">${esc(labelFor(option))}</option>`).join("");
+        select.value = options.some(option => valueFor(option) === selected) ? selected : "";
+      }
+
+      function formatAnalyticsChartDate(value) {
+        const [year, month, day] = value.split("-").map(Number);
+        const date = new Date(Date.UTC(year, month - 1, day));
+        return new Intl.DateTimeFormat("en-US", {
+          day: "2-digit", month: "short", timeZone: "UTC",
+        }).format(date);
+      }
+
+      function billingAnalyticsChartData(days, grouping) {
+        if (grouping === "day") {
+          const includeMonth = days.length > 35;
+          return {
+            points: days,
+            average: billingAnalyticsAverageDaily,
+            averageLabel: "Avg/day",
+            chartLabel: "Daily",
+            labelForPoint: point => includeMonth
+              ? `${String(point.date || "").slice(5, 7)}/${String(point.date || "").slice(-2)}`
+              : String(point.date || "").slice(-2),
+          };
+        }
+        const buckets = new Map();
+        for (const point of days) {
+          const date = String(point.date || "");
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+          let key;
+          if (grouping === "week") {
+            const weekday = new Date(date + "T00:00:00Z").getUTCDay();
+            key = shiftBillingDate(date, 0, -((weekday + 6) % 7));
+          } else {
+            key = date.slice(0, 7);
+          }
+          let bucket = buckets.get(key);
+          if (!bucket) {
+            bucket = {key, collected_amount:0, firstDate:date, lastDate:date};
+            buckets.set(key, bucket);
+          }
+          bucket.collected_amount += Number(point.collected_amount) || 0;
+          bucket.lastDate = date;
+        }
+        const points = [...buckets.values()].map(bucket => {
+          let label;
+          if (grouping === "week") {
+            const first = formatAnalyticsChartDate(bucket.firstDate);
+            const last = formatAnalyticsChartDate(bucket.lastDate);
+            const firstMonth = bucket.firstDate.slice(0, 7);
+            const lastMonth = bucket.lastDate.slice(0, 7);
+            label = firstMonth === lastMonth
+              ? `${first}–${last.slice(last.indexOf(" ") + 1)}`
+              : `${first}–${last}`;
+          } else {
+            const [year, month] = bucket.key.split("-").map(Number);
+            label = new Intl.DateTimeFormat("en-IN", {
+              month:"short", year:"2-digit", timeZone:"UTC",
+            }).format(new Date(Date.UTC(year, month - 1, 1)));
+          }
+          return {date:bucket.firstDate, collected_amount:bucket.collected_amount, chart_label:label};
+        });
+        const total = points.reduce((sum, point) => sum + point.collected_amount, 0);
+        return {
+          points,
+          average: points.length ? total / points.length : 0,
+          averageLabel: grouping === "week" ? "Avg/week" : "Avg/month",
+          chartLabel: grouping === "week" ? "Weekly" : "Monthly",
+          labelForPoint: point => point.chart_label,
+        };
+      }
+
+      function renderBillingAnalyticsGroupedChart() {
+        const grouped = billingAnalyticsChartData(billingAnalyticsDaily, billingAnalyticsGrouping);
+        $("analyticsChartTitle").textContent = `${grouped.chartLabel} collections`;
+        renderBillingAnalyticsChart("analyticsDailyChart", grouped.points, grouped.average,
+          grouped.labelForPoint, grouped.averageLabel, grouped.chartLabel);
+      }
+
+      function setBillingAnalyticsGrouping(grouping) {
+        if (!["day", "week", "month"].includes(grouping)) return;
+        billingAnalyticsGrouping = grouping;
+        $("analyticsChartGrouping").value = grouping;
+        renderBillingAnalyticsGroupedChart();
+      }
+
+      function renderBillingAnalyticsChart(targetID, points, average, labelForPoint, averageLabel, chartLabel) {
+        const target = $(targetID);
+        if (!points.length) {
+          target.innerHTML = `<p class="hint">No dates in the selected range.</p>`;
+          return;
+        }
+        const values = points.map(point => Number(point.collected_amount) || 0);
+        const hasCollections = values.some(value => value !== 0);
+        const maximum = Math.max(0, ...values);
+        const minimum = Math.min(0, ...values);
+        const range = maximum - minimum || 1;
+        const width = 1000, height = 250, left = 76, right = 18, top = 24, bottom = 205;
+        const plotHeight = bottom - top;
+        const zeroY = maximum === minimum ? bottom : top + maximum / range * plotHeight;
+        const step = (width - left - right) / points.length;
+        const barWidth = Math.max(2, Math.min(30, step * 0.66));
+        const labelStep = points.length > 120 ? 30 : points.length > 35 ? 7 : points.length > 18 ? 2 : 1;
+        const bars = points.map((point, index) => {
+          const value = values[index];
+          const barHeight = Math.abs(value) / range * plotHeight;
+          const x = left + index * step + (step - barWidth) / 2;
+          const y = value >= 0 ? zeroY - barHeight : zeroY;
+          const label = labelForPoint(point);
+          const tick = index % labelStep === 0 || index === points.length - 1
+            ? `<text x="${(x + barWidth / 2).toFixed(1)}" y="229" text-anchor="middle">${esc(label)}</text>` : "";
+          const color = value === 0 ? "#9ca3af" : value < 0 ? "#b42318" : "#1d4ed8";
+          return `<g><title>${esc(label)}: ${esc(money(value))}</title><rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${Math.max(1, barHeight).toFixed(1)}" rx="2" fill="${color}"></rect>${tick}</g>`;
+        }).join("");
+        const averageValue = Number(average) || 0;
+        const averageY = maximum === minimum ? bottom : top + (maximum - averageValue) / range * plotHeight;
+        const emptyNote = hasCollections ? "" : `<text x="${(left + width - right) / 2}" y="${top + 20}" text-anchor="middle">No collections recorded in this period</text>`;
+        target.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(`${chartLabel} collection bars with ${averageLabel} line`)}"><text class="chart-value" x="4" y="${top + 4}">${esc(money(maximum))}</text><text class="chart-value" x="4" y="${bottom}">${esc(money(minimum))}</text><line x1="${left}" y1="${zeroY}" x2="${width - right}" y2="${zeroY}" stroke="#d3d8e0"></line><line class="average-line" x1="${left}" y1="${averageY}" x2="${width - right}" y2="${averageY}"></line><text class="chart-value" x="${width - right - 4}" y="${averageY - 5}" text-anchor="end">${esc(averageLabel + " " + formatAverageDaily(averageValue))}</text>${emptyNote}${bars}</svg>`;
+      }
+
+      async function loadBillingAnalytics() {
+        const requestID = ++billingAnalyticsRequestID;
+        const range = billingAnalyticsRange();
+        if (!range.start || !range.end || range.end < range.start) {
+          $("billingAnalyticsStatus").textContent = "Choose a valid start and end date for the selected period.";
+          $("billingAnalyticsStatus").className = "msg error";
+          return;
+        }
+        try {
+          const params = new URLSearchParams({ start: range.start, end: range.end });
+          const categoryFilter = $("analyticsCategory").value;
+          const pcFilter = $("analyticsPC").value;
+          const customerFilter = $("analyticsCustomer").value.trim();
+          if (categoryFilter) params.set("category", categoryFilter);
+          if (pcFilter) params.set("pc", pcFilter);
+          if (customerFilter) params.set("customer", customerFilter);
+          const report = await request("/api/billing/analytics?" + params.toString());
+          if (requestID !== billingAnalyticsRequestID) return;
+          updateAnalyticsFilterOptions("analyticsCategory", report.available_categories || [], "All categories", value => value, value => value);
+          updateAnalyticsFilterOptions("analyticsPC", report.available_pcs || [], "All PCs", item => item.id, item => item.name);
+          const thisMonth = report.this_month || {};
+          const lastMonth = report.last_month || {};
+          const summary = report.range_summary || {};
+          $("analyticsThisMonth").textContent = money(thisMonth.collected_amount);
+          $("analyticsLastMonth").textContent = money(lastMonth.collected_amount);
+          $("analyticsRangeCollected").textContent = money(summary.collected_amount);
+          $("analyticsAverageDaily").textContent = formatAverageDaily(report.average_daily_collected);
+          $("analyticsRangeGame").textContent = money(summary.game_amount);
+          $("analyticsRangeSnacks").textContent = money(summary.snack_amount);
+          $("analyticsRangeBilled").textContent = money(summary.billed_amount);
+          $("analyticsRangeOutstanding").textContent = money(summary.outstanding);
+          $("analyticsRangeSessions").textContent = String(Number(summary.session_count) || 0);
+          const daily = Array.isArray(report.daily) ? report.daily : [];
+          billingAnalyticsDaily = daily;
+          billingAnalyticsAverageDaily = Number(report.average_daily_collected) || 0;
+          renderBillingAnalyticsGroupedChart();
+          const categories = Array.isArray(report.categories) ? report.categories : [];
+          $("analyticsCategoryRows").innerHTML = categories.map(item =>
+            `<tr><td>${esc(item.category)}</td><td>${Number(item.session_count) || 0}</td><td>${Number(item.standalone_snack_sales) || 0}</td><td>${Number(item.minutes) || 0} min</td><td>${money(item.game_amount)}</td><td>${money(item.snack_amount)}</td><td>${money(item.billed_amount)}</td><td>${money(item.collected_amount)}</td><td>${money(item.outstanding)}</td></tr>`
+          ).join("") || "<tr><td colspan='9'>No category activity for this range and filter.</td></tr>";
+
+          const status = $("billingAnalyticsStatus");
+          const devices = Array.isArray(report.devices) ? report.devices : [];
+          if (report.complete) {
+            status.textContent = `Showing ${report.range_start} through ${report.range_end}. All registered PCs are synchronized.`;
+            status.className = "msg status running";
+          } else {
+            const affected = devices.filter(item => !item.online || item.pending_records > 0 || item.error)
+              .map(item => `${item.name || item.device_id}: ${!item.online ? "offline" : item.error || `${item.pending_records} pending`}`);
+            status.textContent = `Showing ${report.range_start} through ${report.range_end}. Analytics may be incomplete until all registered PCs sync. ` +
+              (affected.length ? affected.join(" | ") : "Synchronization status is unavailable.") +
+              " Collections are assigned by payment date; billed and outstanding use session start date (Asia/Kolkata).";
+            status.className = "msg status alert";
+          }
+        } catch (e) {
+          if (requestID === billingAnalyticsRequestID) {
+            $("billingAnalyticsStatus").textContent = "Could not load revenue analytics: " + e.message;
+            $("billingAnalyticsStatus").className = "msg error";
+          }
+        }
       }
 
       function requestID() {
@@ -1967,64 +2622,214 @@
         }
       }
 
-      async function loadBillingReport() {
-        const date = $("billingReportDate");
-        if (!date.value) date.value = billingTodayDate();
-        try {
-          const report = await request("/api/billing/report?date=" + encodeURIComponent(date.value));
-          const records = Array.isArray(report.records) ? report.records : [];
-          const systems = Array.isArray(report.pcs) ? report.pcs : [];
-          const devices = Array.isArray(report.devices) ? report.devices : [];
-          
-          
-          $("reportSystems").textContent = String(Number(report.system_count) || 0);
-          $("reportSessions").textContent = String(Number(report.session_count ?? report.customer_count) || 0);
-          $("reportCustomers").textContent = String(Number(report.unique_customer_count) || 0);
-          $("reportBilled").textContent = money(report.billed_amount);
-          $("reportRevenue").textContent = money(report.collected_amount ?? report.revenue);
-          $("reportOutstanding").textContent = money(report.outstanding);
-          $("billingReportPCs").innerHTML = systems.map(item =>
-            `<tr><td>${esc(item.pc_name)}${item.device_id ? ` <small class="hint">${esc(item.device_id)}</small>` : ""}</td><td>${Number(item.session_count ?? item.customer_count) || 0}</td><td>${money(item.billed_amount)}</td><td>${money(item.collected_amount ?? item.revenue)}</td><td>${money(item.outstanding)}</td></tr>`
-          ).join("") || "<tr><td colspan='5'>No session records for this date.</td></tr>";
-          $("billingReportDevices").innerHTML = devices.map(item => {
-            const state = !item.online ? "Offline" : item.error ? "Sync issue" : "Online";
-            const pending = Number(item.pending_records) || 0;
-            return `<tr><td>${esc(item.name || item.device_id)}</td><td>${esc(state)}</td><td>${pending}</td><td>${esc(item.last_successful_sync_at || "Never")}</td><td>${esc(item.error || "")}</td></tr>`;
-          }).join("") || "<tr><td colspan='5'>No device synchronization status yet. Use Sync PCs to check registered systems.</td></tr>";
-          $("billingReportRecords").innerHTML = records.map(item =>
-            `<tr><td>${esc(item.customer_name)}</td><td>${esc(item.pc_name)} <small class="hint">${esc(item.pc_id)}</small></td><td>${Number(item.players) || 0}</td><td>${esc(report.date)}</td><td>${esc(item.started_at)}</td><td>${esc(item.ended_at || (item.expected_end_at ? "Open — expected " + item.expected_end_at : "Open"))}</td><td>${spentMinutes(item)} min</td><td>${Number(item.additional_minutes) || 0} min</td><td>${money(item.final_amount)}</td><td>${money(item.amount_paid)}</td><td>${money(Math.max(0, Number(item.final_amount) - Number(item.amount_paid)))}</td><td>${esc(item.payment_status)}</td></tr>`
-          ).join("") || "<tr><td colspan='12'>No session records for this date.</td></tr>";
-          const status = $("billingReportStatus");
-          if (report.complete) {
-            status.textContent = `All registered PCs synchronized for ${report.date} (${report.timezone}).`;
-          } else {
-            const affected = devices.filter(item => !item.online || item.pending_records > 0 || item.error)
-              .map(item => `${item.name || item.device_id}: ${!item.online ? "offline" : item.error || `${item.pending_records} pending`}; last sync ${item.last_successful_sync_at || "never"}`);
-            status.textContent = `Report for ${report.date} (${report.timezone}) is incomplete; totals are not verified final figures.${affected.length ? " " + affected.join(" | ") : " Synchronization status is unavailable."}`;
-          }
-          status.className = "msg " + (report.complete ? "status running" : "status alert");
-        } catch (e) {
-          $("billingReportStatus").textContent = "Could not load consolidated report: " + e.message;
-          $("billingReportStatus").className = "msg error";
+      let billingDailyReport = null;
+      function isStandaloneSnackRow(item) {
+        return String(item.pc_id || "").toLowerCase() === "__no_pc_snack__";
+      }
+      function setDailyReportOptions(id, entries, emptyLabel, valueFor, labelFor) {
+        const select = $(id), previous = select.value;
+        select.innerHTML = `<option value>${esc(emptyLabel)}</option>` + entries.map(item =>
+          `<option value="${esc(valueFor(item))}">${esc(labelFor(item))}</option>`).join("");
+        select.value = entries.some(item => valueFor(item) === previous) ? previous : "";
+      }
+      function renderBillingReport() {
+        const report = billingDailyReport;
+        if (!report) return;
+        const allRecords = Array.isArray(report.records) ? report.records : [];
+        const category = $("reportCategory").value.toLowerCase();
+        const pc = $("reportPC").value;
+        const customer = $("reportCustomer").value.trim().toLowerCase();
+        const records = allRecords.filter(item =>
+          (!category || String(item.category || "").toLowerCase() === category) &&
+          (!pc || (pc === "__unassigned__"
+            ? !String(item.pc_id || "").trim()
+            : item.pc_id === pc)) &&
+          (!customer || String(item.customer_name || "").toLowerCase().includes(customer)));
+        const gaming = records.filter(item => !isStandaloneSnackRow(item));
+        const gameAmount = records.reduce((sum, item) => sum + Math.max(0, Number(item.final_amount) - Number(item.snacks || 0)), 0);
+        const snackAmount = records.reduce((sum, item) => sum + (Number(item.snacks) || 0), 0);
+        const billed = records.reduce((sum, item) => sum + (Number(item.final_amount) || 0), 0);
+        const collected = records.reduce((sum, item) => sum + (Number(item.amount_paid) || 0), 0);
+        const outstanding = records.reduce((sum, item) => sum + Math.max(0, Number(item.final_amount) - Number(item.amount_paid)), 0);
+        const customers = new Set(gaming.map(item => String(item.customer_name || "").trim().toLowerCase()).filter(Boolean));
+        const systems = new Set(gaming.map(item => item.pc_id).filter(Boolean));
+        $("reportSystems").textContent = String(systems.size);
+        $("reportSessions").textContent = String(gaming.length);
+        $("reportCustomers").textContent = String(customers.size);
+        $("reportGameAmount").textContent = money(gameAmount);
+        $("reportSnackAmount").textContent = money(snackAmount);
+        $("reportBilled").textContent = money(billed);
+        $("reportRevenue").textContent = money(collected);
+        $("reportOutstanding").textContent = money(outstanding);
+
+        const byPC = new Map();
+        for (const item of records) {
+          const key = `${item.device_id || ""}\u0000${item.pc_id || ""}`;
+          if (!byPC.has(key)) byPC.set(key, {
+            name: String(item.pc_name || "").trim() || (isStandaloneSnackRow(item) ? "No PC" : "Unassigned"),
+            id: item.pc_id || "", sessions: 0, game: 0, snacks: 0, billed: 0, collected: 0, due: 0,
+          });
+          const totals = byPC.get(key);
+          if (!isStandaloneSnackRow(item)) totals.sessions++;
+          totals.game += Math.max(0, Number(item.final_amount) - Number(item.snacks || 0));
+          totals.snacks += Number(item.snacks) || 0;
+          totals.billed += Number(item.final_amount) || 0;
+          totals.collected += Number(item.amount_paid) || 0;
+          totals.due += Math.max(0, Number(item.final_amount) - Number(item.amount_paid));
+        }
+        $("billingReportPCs").innerHTML = [...byPC.values()].map(item =>
+          `<tr><td>${esc(item.name)} <small class="hint">${esc(item.id)}</small></td><td>${item.sessions}</td><td>${money(item.game)}</td><td>${money(item.snacks)}</td><td>${money(item.billed)}</td><td>${money(item.collected)}</td><td>${money(item.due)}</td></tr>`
+        ).join("") || "<tr><td colspan='7'>No entries match these filters.</td></tr>";
+        const devices = Array.isArray(report.devices) ? report.devices : [];
+        renderBillingSyncDevices(devices);
+        const status = $("billingReportStatus");
+        const unassigned = records.filter(item => !isStandaloneSnackRow(item) && !String(item.pc_name || "").trim()).length;
+        const unassignedNote = unassigned
+          ? ` ${unassigned} record(s) without a PC name are included as Unassigned.`
+          : "";
+        const periodLabel = billingReportRangeLabel(report);
+        if (report.complete) {
+          status.textContent = `All registered PCs synchronized for ${periodLabel} (${report.timezone}).` + unassignedNote;
+        } else {
+          const affected = devices.filter(item => !item.online || item.pending_records > 0 || item.error)
+            .map(item => `${item.name || item.device_id}: ${!item.online ? "offline" : item.error || `${item.pending_records} pending`}; last sync ${item.last_successful_sync_at || "never"}`);
+          status.textContent = `Report for ${periodLabel} (${report.timezone}) may be incomplete.${affected.length ? " " + affected.join(" | ") : " Synchronization status is unavailable."}` + unassignedNote;
+        }
+        status.className = "msg " + (report.complete && !unassigned ? "status running" : "status alert");
+      }
+
+      function billingReportRangeLabel(report) {
+        const start = report.start_date || report.date || "";
+        const end = report.end_date || report.date || start;
+        return start === end ? start : `${start} to ${end}`;
+      }
+
+      function renderBillingSyncDevices(devices) {
+        const rows = devices.map(item => {
+          const state = !item.online ? "Offline" : item.error ? "Sync issue" : "Online";
+          const pending = Number(item.pending_records) || 0;
+          return `<tr><td>${esc(item.name || item.device_id)}</td><td>${esc(state)}</td><td>${pending}</td><td>${esc(item.last_successful_sync_at || "Never")}</td><td>${esc(item.error || "")}</td></tr>`;
+        }).join("") || "<tr><td colspan='5'>No PC sync status is available.</td></tr>";
+        $("billingReportDevices").innerHTML = rows;
+        $("adminBillingDevices").innerHTML = rows;
+      }
+
+      function renderBillingEntries() {
+        const report = billingDailyReport;
+        if (!report) return;
+        const category = $("adminBillingCategory").value.toLowerCase();
+        const pc = $("adminBillingPC").value;
+        const customer = $("adminBillingCustomer").value.trim().toLowerCase();
+        const records = (Array.isArray(report.records) ? report.records : []).filter(item =>
+          (!category || String(item.category || "").toLowerCase() === category) &&
+          (!pc || (pc === "__unassigned__" ? !String(item.pc_id || "").trim() : item.pc_id === pc)) &&
+          (!customer || String(item.customer_name || "").toLowerCase().includes(customer)));
+        const sortedRecords = [...records];
+        sortedRecords.sort((a, b) => Date.parse(b.started_at) - Date.parse(a.started_at));
+        $("adminBillingEntries").innerHTML = sortedRecords.map(item => {
+          const snacks = Number(item.snacks) || 0;
+          const game = Math.max(0, Number(item.final_amount) - snacks);
+          const pcName = String(item.pc_name || "").trim() || (isStandaloneSnackRow(item) ? "No PC" : "Unassigned");
+          const started = Date.parse(item.started_at);
+          const startTime = Number.isFinite(started)
+            ? new Intl.DateTimeFormat("en-IN", {timeZone:"Asia/Kolkata",day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"}).format(new Date(started))
+            : "—";
+          return `<tr><td>${esc(item.category || "Uncategorized")}</td><td>${esc(pcName)}</td><td>${esc(item.customer_name || (isStandaloneSnackRow(item) ? "Snack sale" : "—"))}</td><td>${esc(startTime)}</td><td>${money(game)}</td><td>${money(snacks)}</td><td>${money(item.final_amount)}</td><td>${money(item.amount_paid)}</td><td>${money(Math.max(0, Number(item.final_amount) - Number(item.amount_paid)))}</td><td>${esc(item.payment_status)}</td></tr>`;
+        }).join("") || "<tr><td colspan='10'>No billing entries in this period.</td></tr>";
+        const label = billingReportRangeLabel(report);
+        $("adminBillingPeriodLabel").textContent = `Entries for ${label} (${report.timezone}).`;
+        const status = $("adminBillingStatus");
+        const devices = Array.isArray(report.devices) ? report.devices : [];
+        if (report.complete) {
+          status.textContent = `All registered PCs synchronized for ${label} (${report.timezone}).`;
+          status.className = "msg status running";
+        } else {
+          const affected = devices.filter(item => !item.online || item.pending_records > 0 || item.error)
+            .map(item => `${item.name || item.device_id}: ${!item.online ? "offline" : item.error || `${item.pending_records} pending`}`);
+          status.textContent = `Billing entries for ${label} may be incomplete.${affected.length ? " " + affected.join(" | ") : " Synchronization status is unavailable."}`;
+          status.className = "msg status alert";
         }
       }
 
-      async function syncBillingNow() {
-        const button = $("syncBillingButton");
-        if (button.disabled) return;
-        button.disabled = true;
-        $("billingReportStatus").textContent = "Synchronizing registered PCs…";
-        $("billingReportStatus").className = "msg";
+      function clearBillingReportData() {
+        billingDailyReport = null;
+        $("reportSystems").textContent = "0";
+        $("reportSessions").textContent = "0";
+        $("reportCustomers").textContent = "0";
+        for (const id of ["reportGameAmount", "reportSnackAmount", "reportBilled", "reportRevenue", "reportOutstanding"]) {
+          $(id).textContent = money(0);
+        }
+        $("billingReportPCs").innerHTML = "<tr><td colspan='7'>No report data.</td></tr>";
+        $("adminBillingEntries").innerHTML = "<tr><td colspan='10'>No report data.</td></tr>";
+        $("adminBillingPeriodLabel").textContent = "Entries for the selected period.";
+        renderBillingSyncDevices([]);
+      }
+
+      async function loadBillingReport() {
+        syncConsolidatedPeriodControls();
+        const requestID = ++billingReportRequestID;
+        const range = consolidatedReportRange();
+        if (!range.start || !range.end || range.end < range.start) {
+          clearBillingReportData();
+          const message = "Choose a valid start and end date for this report period.";
+          $("billingReportStatus").textContent = message;
+          $("billingReportStatus").className = "msg error";
+          $("adminBillingStatus").textContent = message;
+          $("adminBillingStatus").className = "msg error";
+          return;
+        }
+        try {
+          const params = new URLSearchParams({start:range.start,end:range.end});
+          const report = await request("/api/billing/report?" + params.toString());
+          if (requestID !== billingReportRequestID) return;
+          const records = Array.isArray(report.records) ? report.records : [];
+          billingDailyReport = report;
+          const categories = [...new Set(records.map(item => String(item.category || "").trim()).filter(Boolean))].sort();
+          const pcs = new Map(records.map(item => [item.pc_id || "__unassigned__", String(item.pc_name || "").trim() || (isStandaloneSnackRow(item) ? "No PC" : "Unassigned")]));
+          setDailyReportOptions("reportCategory", categories, "All categories", value => value, value => value);
+          setDailyReportOptions("reportPC", [...pcs].map(([id, name]) => ({id, name})), "All PCs", item => item.id, item => item.name);
+          setDailyReportOptions("adminBillingCategory", categories, "All categories", value => value, value => value);
+          setDailyReportOptions("adminBillingPC", [...pcs].map(([id, name]) => ({id, name})), "All PCs", item => item.id, item => item.name);
+          renderBillingReport();
+          renderBillingEntries();
+        } catch (e) {
+          if (requestID === billingReportRequestID) {
+            clearBillingReportData();
+            const message = "Could not load consolidated report: " + e.message;
+            $("billingReportStatus").textContent = message;
+            $("billingReportStatus").className = "msg error";
+            $("adminBillingStatus").textContent = message;
+            $("adminBillingStatus").className = "msg error";
+          }
+        }
+      }
+
+      async function syncBillingNow(buttonID) {
+        if (billingSyncInProgress || !["syncBillingReportsButton", "syncBillingAdminButton"].includes(buttonID)) return;
+        billingSyncInProgress = true;
+        const buttons = ["syncBillingReportsButton", "syncBillingAdminButton"];
+        buttons.forEach(id => { $(id).disabled = true; });
+        for (const id of ["billingReportStatus", "adminBillingStatus"]) {
+          $(id).textContent = "Synchronizing registered PCs…";
+          $(id).className = "msg";
+        }
         try {
           const result = await request("/api/billing/sync", { method: "POST" });
           await loadBilling();
-          if (!$("reports").hidden) await loadBillingReport();
-          if (!result.complete) $("billingReportStatus").textContent = "Synchronization finished, but the report is incomplete. Check each device's status and retry when it is online.";
+          if (!result.complete) {
+            for (const id of ["billingReportStatus", "adminBillingStatus"]) {
+              $(id).textContent += " Synchronization finished, but some PCs remain offline or have pending records.";
+              $(id).className = "msg status alert";
+            }
+          }
         } catch (e) {
-          $("billingReportStatus").textContent = "Synchronization failed: " + e.message;
-          $("billingReportStatus").className = "msg error";
+          for (const id of ["billingReportStatus", "adminBillingStatus"]) {
+            $(id).textContent = "Synchronization failed: " + e.message;
+            $(id).className = "msg error";
+          }
         } finally {
-          button.disabled = false;
+          billingSyncInProgress = false;
+          buttons.forEach(id => { $(id).disabled = false; });
         }
       }
 
@@ -2043,8 +2848,14 @@
         if(!session||!Number.isSafeInteger(amount)||amount<1)return;
         const button=$("snackAdd");button.disabled=true;
         try{
-          const bill=await postCardSession("/api/sessions/"+encodeURIComponent(session)+"/snack",{amount});
-          $("snackAmount").value="";$("snackStatus").textContent=money(amount)+" added to "+bill.pc_name;
+          const noPC=session==="__no_pc_snack__";
+          const bill=noPC
+            ? await postCardSession("/api/billing/snacks/no-pc",{amount})
+            : await postCardSession("/api/sessions/"+encodeURIComponent(session)+"/snack",{amount});
+          $("snackAmount").value="";
+          $("snackStatus").textContent=noPC
+            ? money(amount)+" recorded as a paid No PC snack sale."
+            : money(amount)+" added to "+bill.pc_name;
           await loadBilling();
         }catch(e){$("snackStatus").textContent=e.message;}
         finally{button.disabled=false;}
@@ -2052,8 +2863,8 @@
       function renderBillingSessions(sessions) {
         const selector=$("snackSession");
         const choices=sessions.filter(s=>s.status==="open"&&activePCs().some(p=>sessionMatchesPC(s,p)));
-        const html='<option value="">Select PC</option>'+choices.map(s=>`<option value="${esc(s.id)}">${esc(s.pc_name)}${s.customer_name?" · "+esc(s.customer_name):""}</option>`).join("");
-        if(selector.innerHTML!==html){const previous=selector.value;selector.innerHTML=html;selector.value=choices.some(s=>s.id===previous)?previous:"";}
+        const html='<option value="">Select PC</option>'+choices.map(s=>`<option value="${esc(s.id)}">${esc(s.pc_name)}${s.customer_name?" · "+esc(s.customer_name):""}</option>`).join("")+'<option value="__no_pc_snack__">No PC · standalone snack sale</option>';
+        if(selector.innerHTML!==html){const previous=selector.value;selector.innerHTML=html;selector.value=previous==="__no_pc_snack__"||choices.some(s=>s.id===previous)?previous:"";}
         for (const p of activePCs()) {
           const id=p.id, session=sessions.find(x => sessionMatchesPC(x,p) && x.status === "open");
           applyTileTheme(p,session);
@@ -2063,7 +2874,7 @@
             state.customer=session?.customer_name || "";
             state.players=session ? session.players : 1;
             state.manual=session?.manual_price ?? "";
-            state.category=session?.category || "";
+            state.category=session?.category || preferredCategoryForPC(id);
             state.dirty=false;
           }
           const customer=$("sf-customer-"+id), players=$("sf-players-"+id), category=$("sf-category-"+id);
@@ -2091,7 +2902,9 @@
           await loadCustomerNameSuggestions();
           if (previousCatalog !== JSON.stringify(billingCatalog.entries)) renderDashboard();
           renderBillingSessions(activeBillingSessions);
-          await loadToday(); if (!$("reports").hidden) await Promise.all([loadHistory(), loadBillingReport()]);
+          await loadToday();
+          if (!$("billingReports").hidden) await Promise.all([loadBillingReport(), loadBillingAnalytics()]);
+          if (!$("adminBilling").hidden) await Promise.all([loadHistory(), loadBillingReport()]);
           const summary = await request("/api/billing/summary"); 
           $("billingStatus").hidden = !!summary.enabled; $("billingStatus").textContent = summary.configuration_status || "Billing is disabled on this machine.";
         } catch (e) { $("billingStatus").hidden=false; $("billingStatus").textContent="Billing unavailable: "+e.message; }
@@ -2147,20 +2960,37 @@
           (!date || historySessionDate(session.started_at) === date) &&
           (!pcID || session.pc_id === pcID));
         $("historyRows").innerHTML = rows.map(x => {
-            const payButton = x.final_amount > x.amount_paid
+            const standaloneSnack = isStandaloneSnackRow(x);
+            const payButton = !standaloneSnack && x.final_amount > x.amount_paid
               ? `<button onclick="sessionAction(${argument(x.id)},'pay',${argument(x.pc_id)})">Paid</button> `
               : "";
-            return `<tr><td>${esc(x.id)}</td><td>${esc(x.pc_name)}</td><td>${esc(x.customer_name)}</td><td>${x.players}</td><td>${esc(x.started_at)}</td><td>${esc(x.ended_at || x.expected_end_at)}</td><td>${Number(x.purchased_minutes) + Number(x.additional_minutes)} min</td><td>${money(x.final_amount)}</td><td>${esc(x.payment_status)}</td><td><button onclick="openBillEditor(${argument(x.id)})">Edit</button>${payButton}<button onclick="sessionAction(${argument(x.id)},'close',${argument(x.pc_id)})">Close</button></td></tr>`;
+            const closeButton = x.status === "open"
+              ? `<button onclick="sessionAction(${argument(x.id)},'close',${argument(x.pc_id)})">Close</button>`
+              : "";
+            const pcName = standaloneSnack ? "No PC" : x.pc_name;
+            const customer = standaloneSnack ? "Snack sale" : x.customer_name;
+            const players = standaloneSnack ? "—" : x.players;
+            const minutes = standaloneSnack ? "—" : `${Number(x.purchased_minutes) + Number(x.additional_minutes)} min`;
+            return `<tr><td>${esc(x.id)}</td><td>${esc(pcName)}</td><td>${esc(customer)}</td><td>${players}</td><td>${esc(x.started_at)}</td><td>${esc(x.ended_at || x.expected_end_at)}</td><td>${minutes}</td><td>${money(x.final_amount)}</td><td>${esc(x.payment_status)}</td><td><button onclick="openBillEditor(${argument(x.id)})">Edit</button>${payButton}${closeButton}</td></tr>`;
           }).join("") || "<tr><td colspan='10'>No billing sessions recorded.</td></tr>";
       }
 
       async function sessionAction(id, action, deviceId = "") { try { const session=activeBillingSessions.find(item=>item.id===id); await request("/api/sessions/"+encodeURIComponent(id)+"/"+action,{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"},{deviceId:deviceId||session?.pc_id||"",feature:"session-"+action}); await loadBilling(); } catch(e) { alert(e.message); } }
 
 
-      function showReports(){
+      function showBillingReports(){
         selected = null;
-        showPage("reports");
-        loadHistory(); loadBillingReport();
+        showPage("billingReports");
+        syncConsolidatedPeriodControls();
+        loadBillingReport();
+        loadBillingAnalytics();
+      }
+      function showAdminBilling(){
+        selected = null;
+        showPage("adminBilling");
+        syncConsolidatedPeriodControls();
+        loadHistory();
+        loadBillingReport();
       }
       async function cleanOffline() {
         const button = $("cleanOfflineButton");
@@ -2347,7 +3177,7 @@
         $("billEnded").required = bill.status === "closed";
         $("billCategories").innerHTML = [...new Set(billingCatalog.entries.map(e => e.category))]
           .map(category => `<option value="${esc(category)}"></option>`).join("");
-        const fields = {billCustomer:bill.customer_name, billPlayers:bill.players||"",
+        const fields = {billCustomer:bill.customer_name, billPlayers:bill.players ?? "",
           billSystem:bill.pc_id, billPCName:bill.pc_name, billCategory:bill.category,
           billStarted:billInputDate(bill.started_at), billEnded:billInputDate(bill.ended_at),
           billPurchased:bill.purchased_minutes, billAdditional:bill.additional_minutes,
@@ -2447,7 +3277,7 @@
         }catch(e){$("priceStatus").textContent=e.message;}
       }
       function sessionFormFor(id){
-        if (!sessionFormState.has(id)) sessionFormState.set(id,{customer:"",category:"",players:1,manual:"",secondsDirty:false});
+        if (!sessionFormState.has(id)) sessionFormState.set(id,{customer:"",category:preferredCategoryForPC(id),players:1,manual:"",secondsDirty:false});
         return {state:sessionFormState.get(id)};
       }
       function categoriesForPC(p) {
@@ -2466,6 +3296,7 @@
       function cardSessionInput(id,key,value) {
         const state=sessionFormFor(id).state;
         state[key]=key==="players"?Number(value):value;
+        if (key === "category") rememberCategoryForPC(id, value);
         state.dirty=true;
         state.confirmAction="";
         renderCardBill(id);
@@ -2493,7 +3324,8 @@
           const item=tile.querySelector(":scope > "+selector);
           if(item)item.style.order=sections.length?String(sections.includes(name)?sections.indexOf(name):sections.length):"";
         }
-        const state=!session?"idle":session.continued&&session.resume_marker?.status==="resume_pending"?"continuing":"active";
+        const signedAdjustment=session&&/^[+-]/.test(($("cv-"+p.id)?.value||"").trim());
+        const state=!session?"idle":session.continued&&session.resume_marker?.status==="resume_pending"?"continuing":signedAdjustment&&theme?.actions?.adjusting?"adjusting":"active";
         const action=theme?.actions?.[state];
         start.parentElement.style.gridTemplateColumns=action?action.weights.map(n=>"minmax(0,"+n+"fr)").join(" "):"";
         for(const [key,label] of Object.entries({start:"Start New Session",save:"Save",close:"Close"})){
@@ -2581,7 +3413,7 @@
           const extra=!minutes?0:rate?.minute_paise!=null?Math.round((rate.minute_paise*minutes-(rate.hour_discount_paise||0)*Math.floor(minutes/60))/100):rate?Math.ceil(rate.amount*minutes/rate.duration_minutes):NaN;
           amount=(s.continued?.amount||0)+extra;
         }
-        line.textContent="Played "+fmt(seconds)+" · Game if closed now "+(Number.isFinite(amount)?money(amount):"—");
+        line.textContent="Played "+fmt(seconds)+" · If closed now Game: "+(Number.isFinite(amount)?money(amount):"—")+", Snacks: "+money(s.snacks||0);
       }
       function renderCardBill(id) {
         const p=pcs.find(p=>p.id===id), output=$("bill-"+id);
@@ -2768,22 +3600,31 @@
 
       function renderSystemMetrics() {
         const systems = activePCs();
+        let online = 0;
         let running = 0;
         let paused = 0;
         let offline = 0;
         for (const p of systems) {
           const poller = hostPollers.get(hostAddress(p));
           const status = cachedTimerStatus(p, poller);
-          if (poller?.failedAt !== null && poller?.failedAt !== undefined) offline++;
-          else if (validTimerStatus(status)) {
-            if (status.is_running) running++;
-            else paused++;
+          if (poller && poller.failedAt !== null) {
+            offline++;
+            continue;
           }
+          if (!poller?.sample) continue;
+          online++;
+          if (!validTimerStatus(status)) continue;
+          if (status.is_running) running++;
+          else paused++;
         }
+        $("metricOnline").textContent = String(online);
         $("metricTotal").textContent = String(systems.length);
         $("metricRunning").textContent = String(running);
         $("metricPaused").textContent = String(paused);
         $("metricOffline").textContent = String(offline);
+        document.querySelectorAll("[data-pc-filter]").forEach(button => {
+          button.setAttribute("aria-pressed", String(button.dataset.pcFilter === dashboardStatusFilter));
+        });
       }
 
       function renderDashboardFilters() {
@@ -2833,12 +3674,31 @@
           const customer = session?.customer_name || form.customer;
           const group = session?.category || form.category;
           const searchable = [p.name, p.address, p.id, customer].join(" ").toLocaleLowerCase();
-          const match = (!query || searchable.includes(query)) && (!category || group === category);
+          const pcStatus = dashboardPCStatus(p);
+          const statusMatch = dashboardStatusFilter === "all" ||
+            (dashboardStatusFilter === "online"
+              ? pcStatus !== "offline" && pcStatus !== "unknown"
+              : pcStatus === dashboardStatusFilter);
+          const match = statusMatch && (!query || searchable.includes(query)) && (!category || group === category);
           card.hidden = !match;
           if (match) shown++;
         }
         const empty = $("noFilterMatch");
         if (empty) empty.hidden = !(activePCs().length && !shown);
+      }
+      function dashboardPCStatus(p) {
+        const poller = hostPollers.get(hostAddress(p));
+        if (poller && poller.failedAt !== null) return "offline";
+        if (!poller?.sample) return "unknown";
+        const status = cachedTimerStatus(p, poller);
+        if (!validTimerStatus(status)) return "online";
+        return status.is_running ? "running" : "paused";
+      }
+      function setDashboardStatusFilter(filter) {
+        if (!["online", "running", "paused", "offline", "all"].includes(filter)) return;
+        dashboardStatusFilter = filter;
+        renderSystemMetrics();
+        applyDashboardFilters();
       }
       const baseRenderDashboard = renderDashboard;
       renderDashboard = function () {
@@ -2862,6 +3722,7 @@
           if (card) card.classList.toggle("offline", !!poller && poller.failedAt !== null);
         }
         renderSystemMetrics();
+        applyDashboardFilters();
       };
       const baseRequest = request;
       request = async function (path, options = {}, metadata = {}) {
@@ -2892,6 +3753,7 @@
         }
       };
       restoreSettings();
+      restorePCCategoryPreferences();
       restoreDashboardView();
       loadThemes();
       updatePollingMenu();
@@ -2902,7 +3764,12 @@
       refreshSavedList();
       loadBilling();
       setInterval(refreshSavedList, 15000);
-      setInterval(() => activeBillingSessions.length ? loadBilling() : $("reports").hidden ? loadToday() : loadBillingReport(), 15000);
+      setInterval(() => {
+        if (activeBillingSessions.length) return loadBilling();
+        if (!$("billingReports").hidden) return Promise.all([loadBillingReport(), loadBillingAnalytics()]);
+        if (!$("adminBilling").hidden) return Promise.all([loadHistory(), loadBillingReport()]);
+        return loadToday();
+      }, 15000);
       setInterval(falsePollingTick, 1000);
 
     </script>
