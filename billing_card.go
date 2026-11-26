@@ -106,10 +106,7 @@ func saveCardSession(current Session, pc PC, q cardSessionSave) (Session, error)
 		if err != nil {
 			return Session{}, err
 		}
-		totalSeconds := (x.PurchasedMinutes + x.AdditionalMinutes) * 60
-		if expected, parseErr := sessionTimestamp(x.ExpectedEndAt); parseErr == nil && expected.After(start) {
-			totalSeconds = int(expected.Sub(start).Seconds())
-		}
+		totalSeconds := x.plannedSeconds(start)
 		if q.Mode != "" {
 			totalSeconds = max(0, totalSeconds+change)
 		}
@@ -288,7 +285,14 @@ func continueOwnedSession(session Session, pc PC) (Session, error) {
 		return Session{}, rollback(err)
 	}
 	now := billingSyncTime()
-	session.Continued = &continuedBill{Amount: session.FinalAmount - session.Snacks, SpentSeconds: session.ActualDurationSeconds, PriorMinutes: session.PurchasedMinutes + session.AdditionalMinutes}
+	started, _ := sessionTimestamp(session.StartedAt)
+	priorSeconds := session.plannedSeconds(started)
+	session.Continued = &continuedBill{
+		Amount:       session.FinalAmount - session.Snacks,
+		SpentSeconds: session.ActualDurationSeconds,
+		PriorMinutes: session.PurchasedMinutes + session.AdditionalMinutes,
+		PriorSeconds: &priorSeconds,
+	}
 	session.ManualPrice = nil
 	session.Status = "open"
 	session.EndedAt = ""

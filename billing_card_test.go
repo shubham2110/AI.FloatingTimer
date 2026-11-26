@@ -2,7 +2,37 @@
 
 package main
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
+
+func TestClosingAfterTimeoutCapsGameplayAndCharge(t *testing.T) {
+	configureBillingTest(t)
+	server, _, _, _ := newBillingTimerServer(t, false)
+	pc := PC{ID: "card", Name: "Card", Address: server.URL + "/1", PricingGroup: "PC Pro"}
+	setBillingTestPCs(pc)
+	session, _, err := billingStore.prepareStart(StartSessionRequest{
+		PCID: pc.ID, Category: "PC Pro", Players: 1, DurationMinutes: 2, DurationSeconds: 90, AllowIncomplete: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now().Add(-10 * time.Minute)
+	session, err = billingStore.commitStart(session, started, 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	closed, err := billingStore.updateAtStop(session.ID, "close", 0, 0, started.Add(3*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closed.ActualDurationSeconds != 90 || closed.FinalAmount != session.FinalAmount {
+		t.Fatalf("after timeout: got %d seconds and ₹%d, want 90 seconds and ₹%d",
+			closed.ActualDurationSeconds, closed.FinalAmount, session.FinalAmount)
+	}
+}
 
 func TestCardSessionStartsWithoutCustomerAndSavesSameTimer(t *testing.T) {
 	configureBillingTest(t)

@@ -3402,7 +3402,14 @@
         const marker=s.resume_marker;
         let seconds=marker||s.time_corrected?s.actual_duration_seconds||0:0;
         const since=marker ? (marker.status==="resumed"?marker.timestamp:null) : (!s.time_corrected?s.started_at:null);
-        if(since)seconds+=Math.max(0,Math.floor((Date.now()-Date.parse(since))/1000))||0;
+        if(since){
+          const exact=(Date.parse(s.expected_end_at)-Date.parse(s.started_at))/1000;
+          const planned=Number.isFinite(exact)&&exact>=0 ? Math.floor(exact) : Math.max(0,((s.purchased_minutes||0)+(s.additional_minutes||0))*60);
+          const prior=s.continued;
+          const limit=prior ? prior.spent_seconds+Math.max(0,planned-(prior.prior_seconds ?? prior.prior_minutes*60)) : planned;
+          const elapsed=Math.max(0,Math.floor((Date.now()-Date.parse(since))/1000))||0;
+          seconds+=Math.min(elapsed,Math.max(0,limit-seconds));
+        }
         const minutes=Math.ceil(Math.max(0,seconds-(s.continued?.spent_seconds||0))/60);
         let amount=s.final_amount-(s.snacks||0);
         if(s.manual_price==null && s.pricing_snapshot){
