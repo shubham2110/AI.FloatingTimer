@@ -130,3 +130,19 @@ func TestMinuteRateRoundsFinalChargeToNearestRupee(t *testing.T) {
 		}
 	}
 }
+
+func TestAutoCloseOnlyWhenCountdownIsZero(t *testing.T) {
+	for _, test := range []struct {
+		status TimerStatus
+		want   bool
+	}{
+		{TimerStatus{RemainingSeconds: 300, IsRunning: false}, false},
+		{TimerStatus{RemainingSeconds: 300, IsRunning: true}, false},
+		{TimerStatus{RemainingSeconds: 0, IsRunning: false}, true},
+		{TimerStatus{RemainingSeconds: 0, IsRunning: true}, true},
+	} {
+		if got := shouldAutoCloseTimer(test.status); got != test.want {
+			t.Errorf("timer %+v: auto-close=%t, want %t", test.status, got, test.want)
+		}
+	}
+}

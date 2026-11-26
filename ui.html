@@ -2086,10 +2086,10 @@
         const className = "status " + (offline || !t || t.time_up_visible ? "alert" : t.is_running ? "running" : "paused");
         const time = $("dt-" + id), label = $("ds-" + id);
         if (time) time.textContent = t ? fmt(t.remaining_seconds) : "--:--:--";
-        const attention=!offline && !!t && (!t.is_running || t.remaining_seconds===0) && !!currentCardSession(p);
+        const attention=!offline && !!t && t.remaining_seconds===0 && !!currentCardSession(p);
         const tile=label?.closest?.(".dashboard-card");
         tile?.classList?.toggle("needs-attention",attention);
-        if (label) { label.textContent = attention?"Timer stopped · Auto-close after 30s":text; label.className = className; }
+        if (label) { label.textContent = attention?"Timer at zero · Auto-close after 30s":text; label.className = className; }
         if (selected === id) {
           $("overlayControls").hidden = !!timerID(p);
           $("time").textContent = t ? fmt(t.remaining_seconds) : "--:--:--";

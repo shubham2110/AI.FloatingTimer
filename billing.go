@@ -2030,7 +2030,7 @@ func closeOwnedSessionAt(id string, session Session, pc PC, stopped time.Time) (
 	if err != nil {
 		return Session{}, apiError(http.StatusBadGateway, fmt.Errorf("could not read timer status for %s before closing: %w", pc.Name, err))
 	}
-	if !stopped.IsZero() && (current.UpdatedAt != session.UpdatedAt || previous.IsRunning && previous.RemainingSeconds > 0) {
+	if !stopped.IsZero() && (current.UpdatedAt != session.UpdatedAt || !shouldAutoCloseTimer(previous)) {
 		return Session{}, errors.New("session changed or timer resumed")
 	}
 	if err := timerAction(pc.Address, "reset", 0); err != nil {
@@ -2400,6 +2400,10 @@ func writeBillingError(w http.ResponseWriter, err error) {
 
 // Only the owning process closes a bill. A missing timer or failed status
 // request breaks the observation period and cannot trigger a close.
+func shouldAutoCloseTimer(status TimerStatus) bool {
+	return status.RemainingSeconds == 0
+}
+
 func watchStoppedSessions() {
 	type observation struct {
 		since   time.Time
@@ -2430,7 +2434,7 @@ func watchStoppedSessions() {
 			}
 			checkRecovered = true
 			status, err := getTimerStatus(billingControlAddress(pc))
-			if err != nil || status.IsRunning && status.RemainingSeconds > 0 {
+			if err != nil || !shouldAutoCloseTimer(status) {
 				continue
 			}
 			now := time.Now()
