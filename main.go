@@ -1097,37 +1097,6 @@ func hideTimeUp() {
 // alert. It's a normal Fyne window, not the chrome-stripped overlay — when
 // SetFullScreen(true) is applied Windows removes the titlebar anyway, so the
 // in-UI Minimize button is what makes it dismissible.
-func buildTimeUpWindow(myApp fyne.App) fyne.Window {
-	logf("buildTimeUpWindow", "begin")
-	w := myApp.NewWindow(TimeUpTitle)
-
-	bg := canvas.NewRectangle(color.RGBA{R: 10, G: 10, B: 10, A: 255})
-
-	label := canvas.NewText("TIME UP", color.RGBA{R: 255, G: 50, B: 50, A: 255})
-	label.TextSize = 96
-	label.TextStyle = fyne.TextStyle{Bold: true}
-	label.Alignment = fyne.TextAlignCenter
-
-	minimizeBtn := widget.NewButton("Minimize", func() {
-		logf("timeUpWindow", "Minimize button clicked, begin")
-		hideTimeUp()
-		logf("timeUpWindow", "Minimize button - hideTimeUp returned")
-	})
-
-	// Keep both controls in one centered layout. The previous Border layout
-	// split them between independently sized regions and could be initialized
-	// incorrectly when the hidden window entered fullscreen for the first time.
-	alert := container.NewVBox(label, container.NewCenter(minimizeBtn))
-	w.SetContent(container.NewMax(bg, container.NewCenter(alert)))
-	w.SetCloseIntercept(func() {
-		logf("timeUpWindow", "close intercepted (Alt+F4/X), begin")
-		hideTimeUp()
-		logf("timeUpWindow", "close intercept - hideTimeUp returned")
-	})
-	logf("buildTimeUpWindow", "end")
-	return w
-}
-
 // setupSystemTray adds a tray icon with Pause/Play/Add-time/Reset/Quit — the
 // only way to control or close the app once it has no titlebar and no
 // taskbar entry. desktop.App is an optional interface: on Windows/macOS/
